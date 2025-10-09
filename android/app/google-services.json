@@ -1,0 +1,40 @@
+{
+  "project_info": {
+    "project_number": "954165232602",
+    "firebase_url": "https://streamsync-51abd-default-rtdb.firebaseio.com",
+    "project_id": "streamsync-51abd",
+    "storage_bucket": "streamsync-51abd.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:954165232602:android:6554c2eb1b929b4f58f6e3",
+        "android_client_info": {
+          "package_name": "com.example.streamsynx"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "954165232602-brh9tgqjfbbedp6ou9m4u0l80m1vebb1.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAbJHWWyr4Vw9fjqwjQnOyOINitnQaYo20"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "954165232602-brh9tgqjfbbedp6ou9m4u0l80m1vebb1.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
