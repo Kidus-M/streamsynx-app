@@ -10,7 +10,7 @@ plugins {
 
 android {
     namespace = "com.example.streamsynx"
-    compileSdk = flutter.compileSdkVersion
+    compileSdk = 35
     ndkVersion = flutter.ndkVersion
 
     compileOptions {
@@ -23,10 +23,9 @@ android {
     }
 
     defaultConfig {
-        applicationId = "com.example.streamsynx" // or your package
+        applicationId = "com.example.streamsynx" // your package
         minSdk = 23
-        targetSdk = 34
-        compileSdk = 34
+        targetSdk = 35   // <-- update targetSdk to match compileSdk
         versionCode = 1
         versionName = "1.0"
     }
@@ -34,7 +33,6 @@ android {
     buildTypes {
         release {
             // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
             signingConfig = signingConfigs.getByName("debug")
         }
     }
