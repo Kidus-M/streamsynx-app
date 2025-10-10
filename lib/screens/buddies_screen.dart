@@ -1,3 +1,4 @@
+import 'package:flutter/material.dart';
 class BuddiesScreen extends StatelessWidget {
   const BuddiesScreen({super.key});
   @override
