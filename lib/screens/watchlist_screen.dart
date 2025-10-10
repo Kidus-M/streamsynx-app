@@ -1,3 +1,4 @@
+import 'package:flutter/material.dart';
 class WatchlistScreen extends StatelessWidget {
   const WatchlistScreen({super.key});
   @override
