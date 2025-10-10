@@ -3,15 +3,17 @@ plugins {
     // START: FlutterFire Configuration
     id("com.google.gms.google-services")
     // END: FlutterFire Configuration
-    id("kotlin-android")
+    id("org.jetbrains.kotlin.android")
     // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
     id("dev.flutter.flutter-gradle-plugin")
 }
 
 android {
     namespace = "com.example.streamsynx"
-    compileSdk = 35
-    ndkVersion = flutter.ndkVersion
+
+    // ✅ Updated to latest SDK level required by plugins
+    compileSdk = 36
+    ndkVersion = "29.0.14206865"
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_11
@@ -23,9 +25,9 @@ android {
     }
 
     defaultConfig {
-        applicationId = "com.example.streamsynx" // your package
-        minSdk = 23
-        targetSdk = 35   // <-- update targetSdk to match compileSdk
+        applicationId = "com.example.streamsynx"
+        minSdk = flutter.minSdkVersion
+        targetSdk = 36   // ✅ match compileSdk
         versionCode = 1
         versionName = "1.0"
     }
