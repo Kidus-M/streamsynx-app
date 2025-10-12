@@ -42,13 +42,14 @@ dependencies:
   carousel_slider_plus: ^7.1.1
   flutter_dotenv: ^5.1.0
   share_plus: ^10.0.0
-  screenshotx: ^1.0.0
+#  screenshotx: ^1.0.0
   blur: ^4.0.0
   animations: ^2.0.8
   path_provider: ^2.0.15
 dev_dependencies:
   flutter_test:
     sdk: flutter
+  flutter_launcher_icons: ^0.14.4
 
   # The "flutter_lints" package below contains a set of recommended lints to
   # encourage good coding practices. The lint set provided by the package is
@@ -59,7 +60,10 @@ dev_dependencies:
 
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec
-
+flutter_icons:
+  android: true
+  ios: true
+  image_path: "assets/appLogo.png"
 # The following section is specific to Flutter packages.
 flutter:
   assets:
