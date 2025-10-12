@@ -1,8 +1,9 @@
+// File: lib/widgets/carousel_section.dart
 import 'package:flutter/material.dart';
 import 'package:carousel_slider_plus/carousel_slider_plus.dart';
 import 'dart:convert';
 import 'package:http/http.dart' as http;
-import 'package:flutter_dotenv/flutter_dotenv.dart'; // ✅ for secure API key
+import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'movie_card.dart';
 
 class CarouselSection extends StatefulWidget {
@@ -33,7 +34,7 @@ class _CarouselSectionState extends State<CarouselSection> {
   }
 
   Future<void> fetchData() async {
-    final apiKey = dotenv.env['TMDB_API_KEY']; // ✅ reads from .env
+    final apiKey = dotenv.env['TMDB_API_KEY'];
     if (apiKey == null || apiKey.isEmpty) {
       debugPrint('❌ TMDB API key missing in .env');
       setState(() {
@@ -108,7 +109,7 @@ class _CarouselSectionState extends State<CarouselSection> {
           items: _items.map((item) {
             return Padding(
               padding: const EdgeInsets.symmetric(horizontal: 4),
-              child: MovieCard(item: item),
+              child: MovieCard(movie: item), // Fixed: Changed 'item: item' to 'movie: item'
             );
           }).toList(),
         ),
