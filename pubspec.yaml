@@ -42,6 +42,9 @@ dependencies:
   carousel_slider_plus: ^7.1.1
   flutter_dotenv: ^5.1.0
   share_plus: ^10.0.0
+  screenshot: ^2.1.0
+  blur: ^4.0.0
+  animations: ^2.0.8
 dev_dependencies:
   flutter_test:
     sdk: flutter
