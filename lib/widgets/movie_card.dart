@@ -799,7 +799,7 @@ class StoryPosterWidget extends StatelessWidget {
                           ),
                         ),
 
-                        SizedBox(height: height * 0.03),
+                        SizedBox(height: height * 0.02),
 
                         // --- TITLE ---
                         Padding(
