@@ -47,8 +47,10 @@ class _CarouselSectionState extends State<CarouselSection> {
 
     try {
       final url = Uri.parse(
-        'https://api.themoviedb.org/3/${widget.endpoint}?api_key=$apiKey&language=en-US&page=1',
+        'https://api.themoviedb.org/3/${widget.endpoint}'
+            '${widget.endpoint.contains('?') ? '&' : '?'}api_key=$apiKey&language=en-US&page=1',
       );
+
       final res = await http.get(url);
 
       if (res.statusCode == 200) {

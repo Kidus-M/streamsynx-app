@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:flutter_dotenv/flutter_dotenv.dart';
+import 'package:carousel_slider_plus/carousel_slider_plus.dart';
 import '../widgets/movie_card.dart';
 
 class SearchScreen extends StatefulWidget {
@@ -17,22 +18,18 @@ class _SearchScreenState extends State<SearchScreen> {
   List<dynamic> _results = [];
   bool _loading = false;
 
-  String? _type; // "movie" or "tv" or null
+  String? _type;
   String? _year;
-  String? _genre;
 
   Future<void> _search(String query) async {
     if (query.isEmpty) {
-      setState(() {
-        _results = [];
-        _loading = false;
-      });
+      setState(() => _results = []);
       return;
     }
 
     final apiKey = dotenv.env['TMDB_API_KEY'];
     if (apiKey == null || apiKey.isEmpty) {
-      debugPrint('❌ TMDB API key missing in .env');
+      debugPrint('❌ Missing TMDB API key');
       return;
     }
 
@@ -40,47 +37,41 @@ class _SearchScreenState extends State<SearchScreen> {
 
     try {
       final url = Uri.parse(
-          'https://api.themoviedb.org/3/search/multi?api_key=$apiKey&language=en-US&include_adult=false&query=$query&page=1');
+        'https://api.themoviedb.org/3/search/multi?api_key=$apiKey&language=en-US&include_adult=false&query=$query',
+      );
       final res = await http.get(url);
 
       if (res.statusCode == 200) {
         final data = jsonDecode(res.body);
-        final results = (data['results'] ?? [])
-            .where((e) => e['poster_path'] != null && (e['media_type'] == 'movie' || e['media_type'] == 'tv'))
+        List results = (data['results'] ?? [])
+            .where((e) =>
+        e['poster_path'] != null &&
+            (e['media_type'] == 'movie' || e['media_type'] == 'tv'))
             .toList();
 
-        // Client-side filtering
-        final yearInt = (_year != null && _year!.length == 4) ? int.tryParse(_year!) : null;
-        final genreInt = _genre != null ? int.tryParse(_genre!) : null;
-
-        final filtered = results.where((item) {
+        // Filter by type/year
+        final yearInt = (_year != null && _year!.length == 4)
+            ? int.tryParse(_year!)
+            : null;
+        results = results.where((item) {
           final mediaType = item['media_type'];
           if (_type != null && mediaType != _type) return false;
 
           if (yearInt != null) {
-            final itemYearStr = mediaType == 'movie'
+            final itemYear = mediaType == 'movie'
                 ? item['release_date']?.substring(0, 4)
                 : item['first_air_date']?.substring(0, 4);
-            final itemYearInt = itemYearStr != null ? int.tryParse(itemYearStr) : null;
-            if (itemYearInt != yearInt) return false;
+            return itemYear == _year;
           }
-
-          if (genreInt != null) {
-            final genres = item['genre_ids'] as List<dynamic>?;
-            if (genres == null || !genres.contains(genreInt)) return false;
-          }
-
           return true;
         }).toList();
 
-        setState(() => _results = filtered);
+        setState(() => _results = results);
       } else {
-        debugPrint('⚠️ Failed to fetch search: ${res.statusCode}');
-        setState(() => _results = []);
+        debugPrint('❌ HTTP ${res.statusCode}');
       }
     } catch (e) {
-      debugPrint('⚠️ Search error: $e');
-      setState(() => _results = []);
+      debugPrint('⚠️ Error fetching search results: $e');
     } finally {
       setState(() => _loading = false);
     }
@@ -88,66 +79,127 @@ class _SearchScreenState extends State<SearchScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
     return Scaffold(
       backgroundColor: const Color(0xFF121212),
       appBar: AppBar(
-        backgroundColor: const Color(0xFF282828),
-        title: const Text('Search', style: TextStyle(color: Colors.white)),
-      ),
-      body: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
+        automaticallyImplyLeading: false,
+        backgroundColor: Colors.transparent,
+        elevation: 0,
+        title: Row(
           children: [
-            // Search input
-            TextField(
+            IconButton(
+              onPressed: () => Navigator.pop(context),
+              icon: const Icon(Icons.arrow_back_ios_new,
+                  color: Color(0xFFDAA520)),
+            ),
+            const Text(
+              'Search',
+              style: TextStyle(
+                color: Color(0xFFEAEAEA),
+                fontWeight: FontWeight.bold,
+                fontSize: 22,
+              ),
+            ),
+          ],
+        ),
+      ),
+      body: Column(
+        children: [
+          // 🔍 Glassy Search Bar
+          Container(
+            margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            decoration: BoxDecoration(
+              color: const Color(0xFF1E1E1E).withOpacity(0.9),
+              borderRadius: BorderRadius.circular(16),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withOpacity(0.3),
+                  blurRadius: 12,
+                  offset: const Offset(0, 4),
+                )
+              ],
+            ),
+            child: TextField(
               controller: _controller,
               onChanged: _search,
               style: const TextStyle(color: Colors.white),
+              cursorColor: const Color(0xFFDAA520),
               decoration: InputDecoration(
-                hintText: 'Search movies or shows...',
+                hintText: 'Search for movies or TV shows...',
                 hintStyle: const TextStyle(color: Colors.grey),
-                filled: true,
-                fillColor: const Color(0xFF282828),
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(12),
-                  borderSide: BorderSide.none,
-                ),
-                prefixIcon: const Icon(Icons.search, color: Colors.grey),
+                prefixIcon:
+                const Icon(Icons.search, color: Color(0xFFDAA520)),
+                border: InputBorder.none,
+                contentPadding:
+                const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
               ),
             ),
-            const SizedBox(height: 12),
+          ),
 
-            // Filters row: Type and Year
-            Row(
+          // 🎚 Filters (modernized look)
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: Row(
               children: [
-                DropdownButton<String>(
-                  value: _type,
-                  hint: const Text('All', style: TextStyle(color: Colors.white)),
-                  dropdownColor: const Color(0xFF282828),
-                  items: const [
-                    DropdownMenuItem(value: null, child: Text('All', style: TextStyle(color: Colors.white))),
-                    DropdownMenuItem(value: 'movie', child: Text('Movies', style: TextStyle(color: Colors.white))),
-                    DropdownMenuItem(value: 'tv', child: Text('TV Shows', style: TextStyle(color: Colors.white))),
-                  ],
-                  onChanged: (value) {
-                    setState(() => _type = value);
-                    _search(_controller.text);
-                  },
+                Expanded(
+                  child: DropdownButtonFormField<String>(
+                    value: _type,
+                    dropdownColor: const Color(0xFF1E1E1E),
+                    iconEnabledColor: const Color(0xFFDAA520),
+                    decoration: InputDecoration(
+                      filled: true,
+                      fillColor: const Color(0xFF1E1E1E),
+                      contentPadding:
+                      const EdgeInsets.symmetric(horizontal: 12),
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                        borderSide:
+                        const BorderSide(color: Color(0xFF333333)),
+                      ),
+                    ),
+                    style: const TextStyle(color: Colors.white),
+                    hint: const Text('All Types',
+                        style: TextStyle(color: Colors.grey)),
+                    items: const [
+                      DropdownMenuItem(
+                        value: null,
+                        child: Text('All'),
+                      ),
+                      DropdownMenuItem(
+                        value: 'movie',
+                        child: Text('Movies'),
+                      ),
+                      DropdownMenuItem(
+                        value: 'tv',
+                        child: Text('TV Shows'),
+                      ),
+                    ],
+                    onChanged: (value) {
+                      setState(() => _type = value);
+                      _search(_controller.text);
+                    },
+                  ),
                 ),
                 const SizedBox(width: 12),
                 SizedBox(
-                  width: 80,
+                  width: 100,
                   child: TextField(
                     style: const TextStyle(color: Colors.white),
                     decoration: InputDecoration(
                       hintText: 'Year',
                       hintStyle: const TextStyle(color: Colors.grey),
                       filled: true,
-                      fillColor: const Color(0xFF282828),
+                      fillColor: const Color(0xFF1E1E1E),
                       border: OutlineInputBorder(
                         borderRadius: BorderRadius.circular(12),
-                        borderSide: BorderSide.none,
+                        borderSide:
+                        const BorderSide(color: Color(0xFF333333)),
                       ),
+                      isDense: true,
+                      contentPadding: const EdgeInsets.symmetric(
+                          horizontal: 12, vertical: 14),
                     ),
                     keyboardType: TextInputType.number,
                     onChanged: (val) {
@@ -158,29 +210,70 @@ class _SearchScreenState extends State<SearchScreen> {
                 ),
               ],
             ),
-            const SizedBox(height: 16),
+          ),
 
-            // Results
-            Expanded(
+          const SizedBox(height: 12),
+
+          // 🎞 Results section
+          Expanded(
+            child: AnimatedSwitcher(
+              duration: const Duration(milliseconds: 300),
               child: _loading
-                  ? const Center(child: CircularProgressIndicator(color: Color(0xFFDAA520)))
+                  ? Center(
+                key: const ValueKey('loading'),
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: const [
+                    CircularProgressIndicator(
+                        color: Color(0xFFDAA520)),
+                    SizedBox(height: 12),
+                    Text(
+                      'Finding results...',
+                      style: TextStyle(
+                          color: Color(0xFFA0A0A0), fontSize: 16),
+                    ),
+                  ],
+                ),
+              )
                   : _results.isEmpty
-                  ? const Center(child: Text('No results', style: TextStyle(color: Colors.grey)))
+                  ? Center(
+                key: const ValueKey('empty'),
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: const [
+                    Icon(Icons.search_off,
+                        color: Color(0xFF555555), size: 60),
+                    SizedBox(height: 8),
+                    Text(
+                      'No results found',
+                      style: TextStyle(
+                          color: Color(0xFFA0A0A0), fontSize: 16),
+                    ),
+                  ],
+                ),
+              )
                   : GridView.builder(
-                gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                key: const ValueKey('results'),
+                padding: const EdgeInsets.all(16),
+                gridDelegate:
+                const SliverGridDelegateWithFixedCrossAxisCount(
                   crossAxisCount: 2,
-                  crossAxisSpacing: 12,
-                  mainAxisSpacing: 12,
+                  crossAxisSpacing: 14,
+                  mainAxisSpacing: 14,
                   childAspectRatio: 0.65,
                 ),
                 itemCount: _results.length,
                 itemBuilder: (context, index) {
-                  return MovieCard(movie: _results[index]);
+                  return AnimatedScale(
+                    scale: 1,
+                    duration: const Duration(milliseconds: 300),
+                    child: MovieCard(movie: _results[index]),
+                  );
                 },
               ),
             ),
-          ],
-        ),
+          ),
+        ],
       ),
     );
   }

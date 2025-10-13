@@ -193,7 +193,7 @@ class HomeContent extends StatelessWidget {
             const CarouselSection(
                 title: 'Most Popular Movies', // ✅ Changed title
                 type: 'movie',
-                endpoint: 'discover/movie'), // ✅ Changed endpoint
+                endpoint: 'discover/movie?sort_by=vote_average.desc&vote_count.gte=2000'), // ✅ Changed endpoint
             const SizedBox(height: 32),
             const CarouselSection(
                 title: 'Trending Shows',
@@ -203,7 +203,7 @@ class HomeContent extends StatelessWidget {
             const CarouselSection(
                 title: 'Most Popular Shows', // ✅ Changed title
                 type: 'tv',
-                endpoint: 'discover/tv'), // ✅ Changed endpoint
+                endpoint: 'discover/tv?sort_by=vote_average.desc&vote_count.gte=500'), // ✅ Changed endpoint
             const SizedBox(height: 32),
           ]),
         ),
