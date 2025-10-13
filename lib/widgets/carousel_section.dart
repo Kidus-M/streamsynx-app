@@ -121,7 +121,7 @@ class _CarouselSectionState extends State<CarouselSection> {
               curve: Curves.easeOut,
               transform: Matrix4.identity()
                 ..scale(isActive ? 1.08 : 0.9), // ✅ Grows center card
-              margin: const EdgeInsets.symmetric(horizontal: 6, vertical: 12),
+              margin: const EdgeInsets.symmetric(horizontal: 6, vertical: 24),
               child: Opacity(
                 opacity: isActive ? 1.0 : 0.6,
                 child: MovieCard(movie: item),
