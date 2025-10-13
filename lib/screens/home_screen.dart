@@ -9,6 +9,7 @@ import 'profile_screen.dart';
 import 'SearchScreen.dart';
 import 'dart:convert';
 import 'package:http/http.dart' as http;
+import 'recommended_screen.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 
 class HomeScreen extends StatefulWidget {
@@ -134,6 +135,13 @@ class HomeContent extends StatelessWidget {
     );
   }
 
+  void _openRecommended(BuildContext context) {
+    Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => const RecommendedScreen()),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return CustomScrollView(
@@ -167,12 +175,33 @@ class HomeContent extends StatelessWidget {
                   fontWeight: FontWeight.w700,
                 ),
               ),
-              IconButton(
-                icon: const Icon(Icons.search, color: Colors.white),
-                onPressed: () => _openSearch(context),
+              Row(
+                children: [
+                  // ⭐ Recommended icon button
+                  IconButton(
+                    tooltip: "Recommended",
+                    onPressed: () => _openRecommended(context),
+                    icon: const Icon(
+                      Icons.star_rounded,
+                      color: Color(0xFFDAA520),
+                      size: 26,
+                    ),
+                  ),
+                  // 🔍 Search icon button
+                  IconButton(
+                    tooltip: "Search",
+                    onPressed: () => _openSearch(context),
+                    icon: const Icon(
+                      Icons.search,
+                      color: Colors.white,
+                      size: 26,
+                    ),
+                  ),
+                ],
               ),
             ],
           ),
+
         ),
 
         // Hero Banner
