@@ -193,7 +193,7 @@ class HomeContent extends StatelessWidget {
             const CarouselSection(
                 title: 'Most Popular Movies', // ✅ Changed title
                 type: 'movie',
-                endpoint: 'movie/popular'), // ✅ Changed endpoint
+                endpoint: 'discover/movie'), // ✅ Changed endpoint
             const SizedBox(height: 32),
             const CarouselSection(
                 title: 'Trending Shows',
@@ -203,7 +203,7 @@ class HomeContent extends StatelessWidget {
             const CarouselSection(
                 title: 'Most Popular Shows', // ✅ Changed title
                 type: 'tv',
-                endpoint: 'tv/popular'), // ✅ Changed endpoint
+                endpoint: 'discover/tv'), // ✅ Changed endpoint
             const SizedBox(height: 32),
           ]),
         ),
