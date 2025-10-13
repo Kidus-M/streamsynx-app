@@ -1,9 +1,9 @@
-// File: lib/widgets/carousel_section.dart
 import 'package:flutter/material.dart';
 import 'package:carousel_slider_plus/carousel_slider_plus.dart';
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:flutter_dotenv/flutter_dotenv.dart';
+import 'package:google_fonts/google_fonts.dart';
 import 'movie_card.dart';
 
 class CarouselSection extends StatefulWidget {
@@ -26,6 +26,7 @@ class _CarouselSectionState extends State<CarouselSection> {
   List<dynamic> _items = [];
   bool _loading = true;
   bool _error = false;
+  int _currentIndex = 0;
 
   @override
   void initState() {
@@ -46,7 +47,8 @@ class _CarouselSectionState extends State<CarouselSection> {
 
     try {
       final url = Uri.parse(
-          'https://api.themoviedb.org/3/${widget.endpoint}?api_key=$apiKey&language=en-US&page=1${widget.endpoint.contains('discover') ? '&sort_by=vote_average.desc' : ''}');
+        'https://api.themoviedb.org/3/${widget.endpoint}?api_key=$apiKey&language=en-US&page=1',
+      );
       final res = await http.get(url);
 
       if (res.statusCode == 200) {
@@ -72,8 +74,12 @@ class _CarouselSectionState extends State<CarouselSection> {
   @override
   Widget build(BuildContext context) {
     if (_loading) {
-      return const Center(
-          child: CircularProgressIndicator(color: Color(0xFFDAA520)));
+      return const Padding(
+        padding: EdgeInsets.all(24),
+        child: Center(
+          child: CircularProgressIndicator(color: Color(0xFFDAA520)),
+        ),
+      );
     }
 
     if (_error || _items.isEmpty) {
@@ -89,29 +95,49 @@ class _CarouselSectionState extends State<CarouselSection> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(
-          widget.title,
-          style: const TextStyle(
-            color: Color(0xFFEAEAEA),
-            fontSize: 20,
-            fontWeight: FontWeight.bold,
+        Padding(
+          padding:
+          const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
+          child: Text(
+            widget.title,
+            style: GoogleFonts.poppins(
+              color: const Color(0xFFEAEAEA),
+              fontSize: 20,
+              fontWeight: FontWeight.bold,
+            ),
           ),
         ),
-        const SizedBox(height: 12),
-        CarouselSlider(
-          options: CarouselOptions(
-            height: 220,
-            enableInfiniteScroll: true,
-            viewportFraction: 0.45,
-            enlargeCenterPage: false,
-            padEnds: false,
-          ),
-          items: _items.map((item) {
-            return Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 4),
-              child: MovieCard(movie: item), // Fixed: Changed 'item: item' to 'movie: item'
+        const SizedBox(height: 8),
+        CarouselSlider.builder(
+          itemCount: _items.length,
+          itemBuilder: (context, index, realIdx) {
+            final item = _items[index];
+            final bool isActive = index == _currentIndex;
+
+            return AnimatedContainer(
+              duration: const Duration(milliseconds: 400),
+              curve: Curves.easeOut,
+              transform: Matrix4.identity()
+                ..scale(isActive ? 1.08 : 0.9), // ✅ Grows center card
+              margin: const EdgeInsets.symmetric(horizontal: 6, vertical: 12),
+              child: Opacity(
+                opacity: isActive ? 1.0 : 0.6,
+                child: MovieCard(movie: item),
+              ),
             );
-          }).toList(),
+          },
+          options: CarouselOptions(
+            height: 320, // ✅ Taller — no clipping
+            enlargeCenterPage: true,
+            viewportFraction: 0.55,
+            padEnds: true,
+            autoPlay: true,
+            autoPlayInterval: const Duration(seconds: 5),
+            enableInfiniteScroll: true,
+            onPageChanged: (index, reason) {
+              setState(() => _currentIndex = index);
+            },
+          ),
         ),
       ],
     );
