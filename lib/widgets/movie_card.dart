@@ -350,7 +350,7 @@ class _MovieDetailModalState extends State<MovieDetailModal> {
         'id': widget.movie['id'],
         'title': title,
         'poster_path': widget.movie['poster_path'],
-        'media_type': widget.movie['media_type'] ?? 'movie',
+        'media_type': widget.movie['media_type'],
       });
     } else {
       movies.removeWhere((m) => m['id'] == widget.movie['id']);
