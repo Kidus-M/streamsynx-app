@@ -1,9 +1,19 @@
-import 'package:flutter/material.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:firebase_auth/firebase_auth.dart';
+import 'dart:async';
 
+import 'package:flutter/material.dart';
+
+import '../data/buddies_repo.dart';
+import '../theme/app_theme.dart';
+import '../theme/tokens.dart';
+import '../widgets/app_chrome.dart';
+
+/// Friends, incoming requests, and finding people.
+///
+/// Every list here is a live stream from [BuddiesRepo]; the previous build mixed
+/// live listeners with one-shot reads and never cancelled either, so the tabs
+/// drifted out of sync and the screen kept calling setState after it was gone.
 class BuddiesScreen extends StatefulWidget {
-  const BuddiesScreen({Key? key}) : super(key: key);
+  const BuddiesScreen({super.key});
 
   @override
   State<BuddiesScreen> createState() => _BuddiesScreenState();
@@ -11,318 +21,459 @@ class BuddiesScreen extends StatefulWidget {
 
 class _BuddiesScreenState extends State<BuddiesScreen>
     with SingleTickerProviderStateMixin {
-  final FirebaseAuth _auth = FirebaseAuth.instance;
-  final FirebaseFirestore _db = FirebaseFirestore.instance;
+  final BuddiesRepo _repo = BuddiesRepo();
+  final TextEditingController _search = TextEditingController();
 
-  late TabController _tabController;
-  User? get user => _auth.currentUser;
+  late final TabController _tabs = TabController(length: 3, vsync: this);
 
-  List<Map<String, dynamic>> friends = [];
-  List<Map<String, dynamic>> requests = [];
-  List<Map<String, dynamic>> searchResults = [];
-  Map<String, bool> sentRequests = {};
-  Map<String, bool> loading = {};
-  String searchQuery = '';
-
-  bool isLoading = true;
+  Timer? _debounce;
+  List<BuddyProfile> _results = const [];
+  bool _searching = false;
+  final Set<String> _busy = {};
 
   @override
-  void initState() {
-    super.initState();
-    _tabController = TabController(length: 3, vsync: this);
-    _listenToData();
+  void dispose() {
+    _debounce?.cancel();
+    _tabs.dispose();
+    _search.dispose();
+    super.dispose();
   }
 
-  void _listenToData() {
-    if (user == null) return;
-    final uid = user!.uid;
+  /// Debounced so typing a username does not fire a read per keystroke.
+  void _onQueryChanged(String value) {
+    _debounce?.cancel();
 
-    // --- Listen to friends document (just like in web version) ---
-    final friendsRef = _db.collection('friends').doc(uid);
-    friendsRef.snapshots().listen((docSnap) async {
-      if (docSnap.exists) {
-        final friendIds = List<String>.from(docSnap.data()?['friends'] ?? []);
-        final friendDocs = await Future.wait(friendIds.map((id) async {
-          final doc = await _db.collection('users').doc(id).get();
-          return doc.exists ? {'uid': id, ...doc.data()!} : null;
-        }));
-        setState(() {
-          friends = friendDocs.whereType<Map<String, dynamic>>().toList();
-        });
-      } else {
-        setState(() => friends = []);
-      }
-    });
-
-    // --- Listen to incoming friend requests ---
-    _db
-        .collection('friendRequests')
-        .where('toUserId', isEqualTo: uid)
-        .where('status', isEqualTo: 'pending')
-        .snapshots()
-        .listen((snapshot) async {
-      final reqs = await Future.wait(snapshot.docs.map((d) async {
-        final data = d.data();
-        final sender = await _db.collection('users').doc(data['fromUserId']).get();
-        return sender.exists
-            ? {'id': d.id, ...sender.data()!, ...data}
-            : null;
-      }));
+    if (value.trim().isEmpty) {
       setState(() {
-        requests = reqs.whereType<Map<String, dynamic>>().toList();
+        _results = const [];
+        _searching = false;
+      });
+      return;
+    }
+
+    setState(() => _searching = true);
+    _debounce = Timer(const Duration(milliseconds: 320), () async {
+      final results = await _repo.searchUsers(value);
+      if (!mounted) return;
+      setState(() {
+        _results = results;
+        _searching = false;
       });
     });
-
-    // --- Fetch outgoing friend requests (once) ---
-    _db
-        .collection('friendRequests')
-        .where('fromUserId', isEqualTo: uid)
-        .where('status', isEqualTo: 'pending')
-        .get()
-        .then((snap) {
-      final map = <String, bool>{
-        for (var doc in snap.docs)
-          (doc.data()['toUserId'] as String): true,
-      };
-      setState(() => sentRequests = map);
-    });
   }
 
+  /// Wraps a write so the row shows a spinner and errors surface instead of
+  /// silently doing nothing.
+  Future<void> _run(String uid, Future<void> Function() action, String done) async {
+    if (_busy.contains(uid)) return;
+    setState(() => _busy.add(uid));
 
-  Future<void> _sendRequest(String toUserId) async {
-    if (user == null) return;
-    final uid = user!.uid;
-    final reqId = '${uid}_$toUserId';
-    setState(() => loading[toUserId] = true);
-    await _db.collection('friendRequests').doc(reqId).set({
-      'fromUserId': uid,
-      'toUserId': toUserId,
-      'status': 'pending',
-      'createdAt': DateTime.now(),
-    });
-    setState(() {
-      sentRequests[toUserId] = true;
-      loading[toUserId] = false;
-    });
-  }
-
-  Future<void> _cancelRequest(String toUserId) async {
-    if (user == null) return;
-    final uid = user!.uid;
-    final reqId = '${uid}_$toUserId';
-    setState(() => loading[toUserId] = true);
-    await _db.collection('friendRequests').doc(reqId).delete();
-    setState(() {
-      sentRequests.remove(toUserId);
-      loading[toUserId] = false;
-    });
-  }
-
-  Future<void> _acceptRequest(String fromUserId) async {
-    if (user == null) return;
-    final uid = user!.uid;
-    final reqId = '${fromUserId}_$uid';
-    await _db.collection('friendRequests').doc(reqId).update({'status': 'accepted'});
-    await _db.collection('users').doc(uid).update({
-      'friendUids': FieldValue.arrayUnion([fromUserId])
-    });
-    await _db.collection('users').doc(fromUserId).update({
-      'friendUids': FieldValue.arrayUnion([uid])
-    });
-  }
-
-  Future<void> _rejectRequest(String fromUserId) async {
-    if (user == null) return;
-    final uid = user!.uid;
-    final reqId = '${fromUserId}_$uid';
-    await _db.collection('friendRequests').doc(reqId).update({'status': 'rejected'});
-  }
-
-  Future<void> _unfriend(String friendId) async {
-    if (user == null) return;
-    final uid = user!.uid;
-    await _db.collection('users').doc(uid).update({
-      'friendUids': FieldValue.arrayRemove([friendId])
-    });
-    await _db.collection('users').doc(friendId).update({
-      'friendUids': FieldValue.arrayRemove([uid])
-    });
-  }
-
-  Future<void> _searchUsers(String query) async {
-    final allUsers = await _db.collection('users').limit(100).get();
-    final lower = query.toLowerCase();
-    final res = allUsers.docs
-        .where((u) {
-      final username = (u['username'] ?? '').toString().toLowerCase();
-      return username.startsWith(lower) && u.id != user?.uid;
-    })
-        .map((u) => {'uid': u.id, ...u.data()})
-        .toList();
-    setState(() => searchResults = res);
-  }
-
-  Widget _buildUserTile({
-    required Map<String, dynamic> userData,
-    required String type,
-  }) {
-    final uid = userData['uid'];
-    final isBusy = loading[uid] ?? false;
-    final avatar = userData['avatar'] ??
-        "https://www.gravatar.com/avatar/00000000000000000000000000000000?d=mp&f=y";
-
-    return Container(
-      margin: const EdgeInsets.symmetric(vertical: 6),
-      padding: const EdgeInsets.all(10),
-      decoration: BoxDecoration(
-        color: const Color(0xFF282828),
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: const Color(0xFF333333)),
-      ),
-      child: Row(
-        children: [
-          CircleAvatar(backgroundImage: NetworkImage(avatar), radius: 20),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Text(
-              userData['username'] ?? 'Unknown User',
-              style: const TextStyle(color: Color(0xFFEAEAEA), fontSize: 16),
-              overflow: TextOverflow.ellipsis,
-            ),
-          ),
-          if (type == 'friend')
-            IconButton(
-              icon: const Icon(Icons.person_remove, color: Colors.redAccent),
-              onPressed: () => _unfriend(uid),
-            ),
-          if (type == 'request') ...[
-            IconButton(
-              icon: const Icon(Icons.check_circle, color: Colors.green),
-              onPressed: () => _acceptRequest(userData['fromUserId']),
-            ),
-            IconButton(
-              icon: const Icon(Icons.cancel, color: Colors.redAccent),
-              onPressed: () => _rejectRequest(userData['fromUserId']),
-            ),
-          ],
-          if (type == 'search')
-            isBusy
-                ? const SizedBox(
-              width: 20,
-              height: 20,
-              child: CircularProgressIndicator(strokeWidth: 2),
-            )
-                : sentRequests[uid] == true
-                ? IconButton(
-              icon: const Icon(Icons.hourglass_empty,
-                  color: Colors.grey),
-              onPressed: () => _cancelRequest(uid),
-            )
-                : IconButton(
-              icon:
-              const Icon(Icons.person_add, color: Colors.amber),
-              onPressed: () => _sendRequest(uid),
-            ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildFriendsTab() {
-    if (friends.isEmpty) {
-      return const Center(
-        child: Text(
-          "You haven’t added any friends yet.",
-          style: TextStyle(color: Color(0xFFA0A0A0)),
-        ),
-      );
+    try {
+      await action();
+      if (mounted) showAppSnack(context, done, success: true);
+    } on Object catch (error) {
+      if (mounted) showAppSnack(context, 'That did not work. $error');
+    } finally {
+      if (mounted) setState(() => _busy.remove(uid));
     }
-    return ListView.builder(
-      itemCount: friends.length,
-      itemBuilder: (_, i) =>
-          _buildUserTile(userData: friends[i], type: 'friend'),
-    );
-  }
-
-  Widget _buildRequestsTab() {
-    if (requests.isEmpty) {
-      return const Center(
-        child: Text("No pending friend requests.",
-            style: TextStyle(color: Color(0xFFA0A0A0))),
-      );
-    }
-    return ListView.builder(
-      itemCount: requests.length,
-      itemBuilder: (_, i) =>
-          _buildUserTile(userData: requests[i], type: 'request'),
-    );
-  }
-
-  Widget _buildAddFriendsTab() {
-    return Column(
-      children: [
-        TextField(
-          style: const TextStyle(color: Color(0xFFEAEAEA)),
-          decoration: InputDecoration(
-            hintText: 'Search by username...',
-            hintStyle: const TextStyle(color: Color(0xFFA0A0A0)),
-            filled: true,
-            fillColor: const Color(0xFF121212),
-            border: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(10),
-              borderSide: const BorderSide(color: Color(0xFF333333)),
-            ),
-          ),
-          onChanged: (value) {
-            setState(() => searchQuery = value);
-            if (value.trim().isNotEmpty) _searchUsers(value.trim());
-            else setState(() => searchResults = []);
-          },
-        ),
-        const SizedBox(height: 12),
-        Expanded(
-          child: searchResults.isEmpty
-              ? const Center(
-            child: Text("Enter a username to find users.",
-                style: TextStyle(color: Color(0xFFA0A0A0))),
-          )
-              : ListView.builder(
-            itemCount: searchResults.length,
-            itemBuilder: (_, i) =>
-                _buildUserTile(userData: searchResults[i], type: 'search'),
-          ),
-        ),
-      ],
-    );
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFF121212),
-      appBar: AppBar(
-        backgroundColor: const Color(0xFF282828),
-        title: const Text('Buddies',
-            style: TextStyle(color: Color(0xFFEAEAEA), fontWeight: FontWeight.bold)),
-        bottom: TabBar(
-          controller: _tabController,
-          indicatorColor: const Color(0xFFDAA520),
-          labelColor: const Color(0xFFDAA520),
-          unselectedLabelColor: const Color(0xFFA0A0A0),
-          tabs: const [
-            Tab(text: 'Friends'),
-            Tab(text: 'Requests'),
-            Tab(text: 'Add Friends'),
+      backgroundColor: AppColors.bg,
+      body: SafeArea(
+        bottom: false,
+        child: Column(
+          children: [
+            const PageHeader(
+              eyebrow: 'Together',
+              title: 'Buddies',
+              subtitle: 'Share what you are watching with people you know.',
+            ),
+            _RequestBadgeTabs(repo: _repo, controller: _tabs),
+            Expanded(
+              child: TabBarView(
+                controller: _tabs,
+                children: [
+                  _friendsTab(),
+                  _requestsTab(),
+                  _addTab(),
+                ],
+              ),
+            ),
           ],
         ),
       ),
-      body: TabBarView(
-        controller: _tabController,
-        children: [
-          _buildFriendsTab(),
-          _buildRequestsTab(),
-          _buildAddFriendsTab(),
+    );
+  }
+
+  Widget _friendsTab() {
+    return StreamBuilder<List<BuddyProfile>>(
+      stream: _repo.watchFriends(),
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return const Center(child: CircularProgressIndicator());
+        }
+        final friends = snapshot.data ?? const <BuddyProfile>[];
+        if (friends.isEmpty) {
+          return EmptyState(
+            icon: Icons.people_outline_rounded,
+            title: 'No buddies yet',
+            message: 'Find people by username and send them a request.',
+            actionLabel: 'Find people',
+            onAction: () => _tabs.animateTo(2),
+          );
+        }
+
+        return ListView.builder(
+          padding: const EdgeInsets.fromLTRB(
+              AppSpace.gutter, AppSpace.sm, AppSpace.gutter, AppSpace.xxl),
+          itemCount: friends.length,
+          itemBuilder: (_, index) {
+            final friend = friends[index];
+            return _BuddyTile(
+              profile: friend,
+              busy: _busy.contains(friend.uid),
+              trailing: _TileAction(
+                icon: Icons.person_remove_outlined,
+                tone: AppColors.danger,
+                tooltip: 'Remove buddy',
+                onTap: () => _confirmUnfriend(friend),
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
+  Future<void> _confirmUnfriend(BuddyProfile friend) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        backgroundColor: AppColors.surface,
+        shape: RoundedRectangleBorder(borderRadius: AppRadius.all(AppRadius.lg)),
+        title: Text('Remove ${friend.username}?', style: AppText.headingSm),
+        content: const Text(
+          'You will both stop seeing each other in Buddies.',
+          style: AppText.bodyMuted,
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            style: TextButton.styleFrom(foregroundColor: AppColors.danger),
+            child: const Text('Remove'),
+          ),
         ],
+      ),
+    );
+
+    if (confirmed == true) {
+      await _run(friend.uid, () => _repo.unfriend(friend.uid), 'Removed ${friend.username}');
+    }
+  }
+
+  Widget _requestsTab() {
+    return StreamBuilder<List<FriendRequest>>(
+      stream: _repo.watchIncomingRequests(),
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return const Center(child: CircularProgressIndicator());
+        }
+        final requests = snapshot.data ?? const <FriendRequest>[];
+        if (requests.isEmpty) {
+          return const EmptyState(
+            icon: Icons.mark_email_unread_outlined,
+            title: 'No requests',
+            message: 'When someone asks to be your buddy, it will show up here.',
+          );
+        }
+
+        return ListView.builder(
+          padding: const EdgeInsets.fromLTRB(
+              AppSpace.gutter, AppSpace.sm, AppSpace.gutter, AppSpace.xxl),
+          itemCount: requests.length,
+          itemBuilder: (_, index) {
+            final request = requests[index];
+            final profile = request.from;
+
+            return _BuddyTile(
+              profile: profile,
+              busy: _busy.contains(profile.uid),
+              subtitle: 'Wants to be your buddy',
+              trailing: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  _TileAction(
+                    icon: Icons.check_rounded,
+                    tone: AppColors.success,
+                    tooltip: 'Accept',
+                    onTap: () => _run(
+                      profile.uid,
+                      () => _repo.acceptRequest(profile.uid),
+                      'You and ${profile.username} are now buddies',
+                    ),
+                  ),
+                  const SizedBox(width: AppSpace.xs),
+                  _TileAction(
+                    icon: Icons.close_rounded,
+                    tone: AppColors.textSecondary,
+                    tooltip: 'Decline',
+                    onTap: () => _run(
+                      profile.uid,
+                      () => _repo.rejectRequest(profile.uid),
+                      'Request declined',
+                    ),
+                  ),
+                ],
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
+  Widget _addTab() {
+    return Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(
+              AppSpace.gutter, AppSpace.sm, AppSpace.gutter, AppSpace.md),
+          child: TextField(
+            controller: _search,
+            onChanged: _onQueryChanged,
+            textInputAction: TextInputAction.search,
+            autocorrect: false,
+            decoration: InputDecoration(
+              hintText: 'Search by username',
+              prefixIcon: const Icon(Icons.search_rounded, color: AppColors.textSecondary),
+              suffixIcon: _search.text.isEmpty
+                  ? null
+                  : IconButton(
+                      icon: const Icon(Icons.close_rounded, size: 18),
+                      onPressed: () {
+                        _search.clear();
+                        _onQueryChanged('');
+                      },
+                    ),
+            ),
+          ),
+        ),
+        Expanded(
+          child: StreamBuilder<Set<String>>(
+            stream: _repo.watchOutgoingRequests(),
+            builder: (context, sentSnapshot) {
+              final sent = sentSnapshot.data ?? const <String>{};
+
+              if (_searching) {
+                return const Center(child: CircularProgressIndicator());
+              }
+              if (_search.text.trim().isEmpty) {
+                return const EmptyState(
+                  icon: Icons.person_search_rounded,
+                  title: 'Find your people',
+                  message: 'Type a username to search. Matching is by the start of the name.',
+                );
+              }
+              if (_results.isEmpty) {
+                return EmptyState(
+                  icon: Icons.search_off_rounded,
+                  title: 'No matches',
+                  message: 'Nobody with a username starting "${_search.text.trim()}".',
+                );
+              }
+
+              return ListView.builder(
+                padding: const EdgeInsets.fromLTRB(
+                    AppSpace.gutter, 0, AppSpace.gutter, AppSpace.xxl),
+                itemCount: _results.length,
+                itemBuilder: (_, index) {
+                  final profile = _results[index];
+                  final pending = sent.contains(profile.uid);
+
+                  return _BuddyTile(
+                    profile: profile,
+                    busy: _busy.contains(profile.uid),
+                    trailing: pending
+                        ? _TileAction(
+                            icon: Icons.hourglass_bottom_rounded,
+                            tone: AppColors.textSecondary,
+                            tooltip: 'Cancel request',
+                            onTap: () => _run(
+                              profile.uid,
+                              () => _repo.cancelRequest(profile.uid),
+                              'Request withdrawn',
+                            ),
+                          )
+                        : _TileAction(
+                            icon: Icons.person_add_alt_1_rounded,
+                            tone: AppColors.accent,
+                            tooltip: 'Send request',
+                            onTap: () => _run(
+                              profile.uid,
+                              () => _repo.sendRequest(profile.uid),
+                              'Request sent to ${profile.username}',
+                            ),
+                          ),
+                  );
+                },
+              );
+            },
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+/// The tab bar, with a live count on the Requests tab.
+class _RequestBadgeTabs extends StatelessWidget {
+  const _RequestBadgeTabs({required this.repo, required this.controller});
+
+  final BuddiesRepo repo;
+  final TabController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    return StreamBuilder<List<FriendRequest>>(
+      stream: repo.watchIncomingRequests(),
+      builder: (context, snapshot) {
+        final count = snapshot.data?.length ?? 0;
+
+        return TabBar(
+          controller: controller,
+          tabs: [
+            const Tab(text: 'Buddies'),
+            Tab(
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  const Text('Requests'),
+                  if (count > 0) ...[
+                    const SizedBox(width: 6),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+                      decoration: BoxDecoration(
+                        color: AppColors.accent,
+                        borderRadius: AppRadius.all(AppRadius.pill),
+                      ),
+                      child: Text(
+                        '$count',
+                        style: AppText.caption.copyWith(
+                          color: AppColors.bg,
+                          fontWeight: FontWeight.w700,
+                          fontSize: 11,
+                        ),
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+            const Tab(text: 'Add'),
+          ],
+        );
+      },
+    );
+  }
+}
+
+class _BuddyTile extends StatelessWidget {
+  const _BuddyTile({
+    required this.profile,
+    required this.trailing,
+    this.subtitle,
+    this.busy = false,
+  });
+
+  final BuddyProfile profile;
+  final Widget trailing;
+  final String? subtitle;
+  final bool busy;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: AppSpace.sm),
+      padding: const EdgeInsets.all(AppSpace.md),
+      decoration: AppDecoration.surface(radius: AppRadius.md),
+      child: Row(
+        children: [
+          CircleAvatar(
+            radius: 21,
+            backgroundColor: AppColors.surfaceHigh,
+            backgroundImage: NetworkImage(profile.avatarUrl),
+            onBackgroundImageError: (_, __) {},
+            child: Text(
+              profile.initial,
+              style: AppText.label.copyWith(color: AppColors.textSecondary),
+            ),
+          ),
+          const SizedBox(width: AppSpace.md),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  profile.username,
+                  style: AppText.label,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                if (subtitle != null)
+                  Text(subtitle!, style: AppText.caption, maxLines: 1),
+              ],
+            ),
+          ),
+          if (busy)
+            const SizedBox(
+              width: 22,
+              height: 22,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            )
+          else
+            trailing,
+        ],
+      ),
+    );
+  }
+}
+
+class _TileAction extends StatelessWidget {
+  const _TileAction({
+    required this.icon,
+    required this.tone,
+    required this.tooltip,
+    required this.onTap,
+  });
+
+  final IconData icon;
+  final Color tone;
+  final String tooltip;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Tooltip(
+      message: tooltip,
+      child: Material(
+        color: tone.withValues(alpha: 0.12),
+        shape: const CircleBorder(),
+        child: InkWell(
+          onTap: onTap,
+          customBorder: const CircleBorder(),
+          child: SizedBox(
+            width: 38,
+            height: 38,
+            child: Icon(icon, size: 19, color: tone),
+          ),
+        ),
       ),
     );
   }
