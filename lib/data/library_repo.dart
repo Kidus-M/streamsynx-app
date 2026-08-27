@@ -37,13 +37,70 @@ class LibraryRepo {
 
   // --- Favourites --------------------------------------------------------------
 
-  Stream<List<MediaItem>> watchFavorites() => _watchList('favorites', 'movies');
+  /// Favourites are the one collection the web app splits by media type:
+  /// `movies` holds films as `{id, title, poster_path}`, and `episodes` holds
+  /// series under different key names entirely (`tvShowId`, `tvShowName`).
+  /// Writing everything into `movies` would make anything favourited here
+  /// invisible on the website, and vice versa.
+  static String _favoritesField(MediaItem item) => item.isTv ? 'episodes' : 'movies';
 
-  Future<bool> isFavorite(MediaItem item) async =>
-      (await _read('favorites', 'movies')).any((stored) => _same(stored, item));
+  Stream<List<MediaItem>> watchFavorites() {
+    final userId = uid;
+    if (userId == null) return Stream.value(const []);
 
-  Future<bool> toggleFavorite(MediaItem item) =>
-      _toggle('favorites', 'movies', item);
+    return _db.collection('favorites').doc(userId).snapshots().map((snap) {
+      final data = snap.data();
+      return [
+        ..._itemsOf(data, 'movies').map(MediaItem.fromStored),
+        ..._itemsOf(data, 'episodes').map(MediaItem.fromStored),
+      ];
+    });
+  }
+
+  Future<bool> isFavorite(MediaItem item) async {
+    final entries = await _read('favorites', _favoritesField(item));
+    return entries.any((stored) => _sameFavorite(stored, item));
+  }
+
+  /// @return true when the item is a favourite after the toggle.
+  Future<bool> toggleFavorite(MediaItem item) async {
+    final userId = uid;
+    if (userId == null) return false;
+
+    final field = _favoritesField(item);
+    final ref = _db.collection('favorites').doc(userId);
+    final snap = await ref.get();
+    final entries = _itemsOf(snap.data(), field);
+    final wasPresent = entries.any((stored) => _sameFavorite(stored, item));
+
+    if (wasPresent) {
+      entries.removeWhere((stored) => _sameFavorite(stored, item));
+    } else {
+      entries.insert(0, _favoriteEntry(item));
+    }
+
+    await ref.set({field: entries}, SetOptions(merge: true));
+    return !wasPresent;
+  }
+
+  static Map<String, dynamic> _favoriteEntry(MediaItem item) => item.isTv
+      ? {
+          'tvShowId': item.id,
+          'tvShowName': item.title,
+          'poster_path': item.posterPath,
+          'type': 'tv',
+          'favoritedAt': DateTime.now().toIso8601String(),
+        }
+      : {
+          'id': item.id,
+          'title': item.title,
+          'poster_path': item.posterPath,
+        };
+
+  static bool _sameFavorite(Map<String, dynamic> stored, MediaItem item) {
+    final id = ((item.isTv ? stored['tvShowId'] : stored['id']) as num?)?.toInt();
+    return id == item.id;
+  }
 
   // --- History -----------------------------------------------------------------
 

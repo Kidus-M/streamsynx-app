@@ -72,12 +72,15 @@ class StreamResolver {
 
         final candidate = _mediaUrl(uri);
         if (candidate != null) {
+          // Everything needed comes off the request itself. Calling back into the
+          // controller here would mean awaiting the WebView's own thread from
+          // inside a callback that is blocking it.
+          final headers = _carryHeaders(request.headers);
+          final userAgent = headers.remove('User-Agent');
           _settle(ResolvedStream(
             url: candidate,
-            headers: _carryHeaders(request.headers),
-            userAgent: await controller.evaluateJavascript(
-              source: 'navigator.userAgent',
-            ) as String?,
+            headers: headers,
+            userAgent: userAgent,
           ));
         }
         return null;
@@ -159,7 +162,7 @@ class StreamResolver {
 
   static Map<String, String> _carryHeaders(Map<String, String>? headers) {
     if (headers == null) return const {};
-    const wanted = ['Referer', 'Origin', 'Cookie'];
+    const wanted = ['Referer', 'Origin', 'Cookie', 'User-Agent'];
 
     final carried = <String, String>{};
     headers.forEach((key, value) {

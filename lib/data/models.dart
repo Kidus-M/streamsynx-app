@@ -89,16 +89,28 @@ class MediaItem {
     );
   }
 
-  /// Watchlist and history entries are stored as a trimmed shape in Firestore.
-  static MediaItem fromStored(Map<String, dynamic> json) => MediaItem(
-        id: (json['id'] as num?)?.toInt() ?? 0,
-        type: json['media_type'] as String? ?? 'movie',
-        title: json['title'] as String? ?? json['name'] as String? ?? 'Untitled',
-        posterPath: _clean(json['poster_path']),
-        backdropPath: _clean(json['backdrop_path']),
-        releaseDate: json['release_date'] as String?,
-        rating: _toDouble(json['vote_average']),
-      );
+  /// Stored entries are a trimmed shape, and not a single one: the website's
+  /// favourites use `tvShowId`/`tvShowName` for series while watchlist and
+  /// history use `id`/`title` with a `media_type`. Both are read here so a title
+  /// saved on either client shows up on the other.
+  static MediaItem fromStored(Map<String, dynamic> json) {
+    final isTvFavorite = json.containsKey('tvShowId');
+    final type = isTvFavorite
+        ? 'tv'
+        : (json['media_type'] as String? ?? json['type'] as String? ?? 'movie');
+
+    return MediaItem(
+      id: ((isTvFavorite ? json['tvShowId'] : json['id']) as num?)?.toInt() ?? 0,
+      type: type,
+      title: (isTvFavorite ? json['tvShowName'] : json['title']) as String? ??
+          json['name'] as String? ??
+          'Untitled',
+      posterPath: _clean(json['poster_path']),
+      backdropPath: _clean(json['backdrop_path']),
+      releaseDate: json['release_date'] as String?,
+      rating: _toDouble(json['vote_average']),
+    );
+  }
 
   /// Kept deliberately small: this is what gets written to every user document.
   Map<String, dynamic> toStored() => {
