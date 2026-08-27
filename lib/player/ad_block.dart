@@ -73,16 +73,6 @@ class AdBlock {
     return lower.startsWith('www.') ? lower.substring(4) : lower;
   }
 
-  /// WebKit content-blocker rules. Unlike request interception these work on iOS
-  /// as well as Android, so the fallback player is filtered on both platforms.
-  static List<ContentBlocker> get contentBlockers => [
-        for (final host in blockedHosts)
-          ContentBlocker(
-            trigger: ContentBlockerTrigger(urlFilter: '.*'),
-            action: ContentBlockerAction(type: ContentBlockerActionType.BLOCK),
-          ).._withHost(host),
-      ];
-
   /// Settings shared by the resolver and the visible fallback.
   static InAppWebViewSettings get webViewSettings => InAppWebViewSettings(
         javaScriptEnabled: true,
@@ -94,10 +84,12 @@ class AdBlock {
         useShouldInterceptRequest: true,
         transparentBackground: true,
         allowsInlineMediaPlayback: true,
-        contentBlockers: _hostBlockers(),
+        contentBlockers: contentBlockers,
       );
 
-  static List<ContentBlocker> _hostBlockers() => [
+  /// WebKit content-blocker rules. Unlike request interception these also apply
+  /// on iOS, so the visible fallback is filtered on both platforms.
+  static List<ContentBlocker> get contentBlockers => [
         for (final host in blockedHosts)
           ContentBlocker(
             trigger: ContentBlockerTrigger(
@@ -175,9 +167,4 @@ class AdBlock {
   [1200, 3000, 6000].forEach(function(d){ setTimeout(go, d); });
 })();
 ''';
-}
-
-extension on ContentBlocker {
-  // ignore: unused_element
-  void _withHost(String host) {}
 }
