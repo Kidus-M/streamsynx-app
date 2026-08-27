@@ -1,326 +1,337 @@
-import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
-import '../widgets/stats_card.dart';
+import 'package:flutter/material.dart';
+import 'package:url_launcher/url_launcher.dart';
 
+import '../data/buddies_repo.dart';
+import '../data/deep_links.dart';
+import '../data/library_repo.dart';
+import '../data/models.dart';
+import '../theme/app_theme.dart';
+import '../theme/tokens.dart';
+import '../widgets/app_chrome.dart';
+import 'recommended_screen.dart';
+
+/// Account, activity at a glance, and the handful of settings worth having.
 class ProfileScreen extends StatefulWidget {
-  const ProfileScreen({Key? key}) : super(key: key);
+  const ProfileScreen({super.key});
 
   @override
   State<ProfileScreen> createState() => _ProfileScreenState();
 }
 
 class _ProfileScreenState extends State<ProfileScreen> {
-  final FirebaseAuth _auth = FirebaseAuth.instance;
-  final FirebaseFirestore _db = FirebaseFirestore.instance;
+  final LibraryRepo _library = LibraryRepo();
+  final BuddiesRepo _buddies = BuddiesRepo();
 
-  bool _loading = true;
-  bool _editing = false;
-  String? _username;
-  String? _email;
-  String? _avatar;
-  String? _error;
-
-  int buddies = 0;
-  int moviesWatched = 0;
-  int episodesWatched = 0;
-  int favMovies = 0;
-  int favEpisodes = 0;
-  int favShows = 0;
-  String topGenre = "N/A";
-
-  final Map<int, String> genreMap = {
-    28: "Action",
-    12: "Adventure",
-    16: "Animation",
-    35: "Comedy",
-    80: "Crime",
-    18: "Drama",
-    14: "Fantasy",
-    10751: "Family",
-    878: "Sci-Fi",
-    27: "Horror",
-    10759: "Action & Adventure",
-    // add more if needed
-  };
+  String _username = '';
 
   @override
   void initState() {
     super.initState();
-    _fetchUserDataAndStats();
+    _loadUsername();
   }
 
-  Future<void> _fetchUserDataAndStats() async {
-    final user = _auth.currentUser;
-    if (user == null) {
-      setState(() {
-        _error = "Please log in to view your profile.";
-        _loading = false;
-      });
-      return;
-    }
-
-    try {
-      // 1. Fetch user doc
-      final userDocSnap = await _db.collection('users').doc(user.uid).get();
-      if (userDocSnap.exists) {
-        final data = userDocSnap.data()!;
-        _username = data['username'] as String?;
-        _email = data['email'] as String?;
-        _avatar = data['avatar'] as String?;
-      }
-
-      // 2. Fetch friends document (to get "buddies")
-      final friendsSnap = await _db.collection('friends').doc(user.uid).get();
-      if (friendsSnap.exists) {
-        final friendsData = friendsSnap.data()!;
-        final List<dynamic>? friendsList = friendsData['friends'] as List<dynamic>?;
-        buddies = friendsList?.length ?? 0;
-      } else {
-        buddies = 0;
-      }
-
-      // 3. Fetch history doc
-      final historySnap = await _db.collection('history').doc(user.uid).get();
-      Map<String, dynamic> history = {};
-      if (historySnap.exists) {
-        history = historySnap.data()!;
-      }
-
-      // 4. Fetch favorites doc
-      final favSnap = await _db.collection('favorites').doc(user.uid).get();
-      Map<String, dynamic> favorites = {};
-      if (favSnap.exists) {
-        favorites = favSnap.data()!;
-      }
-
-      // 5. Compute counts
-      moviesWatched = (history['movies'] as List<dynamic>?)?.length ?? 0;
-      episodesWatched = (history['episodes'] as List<dynamic>?)?.length ?? 0;
-      favMovies = (favorites['movies'] as List<dynamic>?)?.length ?? 0;
-      favEpisodes = (favorites['episodes'] as List<dynamic>?)?.length ?? 0;
-      favShows = (favorites['shows'] as List<dynamic>?)?.length ?? 0;
-
-      // 6. Compute top genre
-      Map<int, int> genreCounts = {};
-      final List<dynamic>? movieList = history['movies'] as List<dynamic>?;
-      final List<dynamic>? episodeList = history['episodes'] as List<dynamic>?;
-      final allHistory = <dynamic>[];
-      if (movieList != null) allHistory.addAll(movieList);
-      if (episodeList != null) allHistory.addAll(episodeList);
-
-      for (var item in allHistory) {
-        if (item is Map<String, dynamic>) {
-          // Prefer genre_ids if present
-          if (item['genre_ids'] is List<dynamic>) {
-            for (var g in (item['genre_ids'] as List<dynamic>)) {
-              if (g is int) {
-                genreCounts[g] = (genreCounts[g] ?? 0) + 1;
-              }
-            }
-          } else if (item['genres'] is List<dynamic>) {
-            for (var g in (item['genres'] as List<dynamic>)) {
-              if (g is Map<String, dynamic> && g['id'] is int) {
-                int gid = g['id'];
-                genreCounts[gid] = (genreCounts[gid] ?? 0) + 1;
-              }
-            }
-          }
-        }
-      }
-
-      if (genreCounts.isNotEmpty) {
-        final topEntry = genreCounts.entries.reduce((a, b) => a.value > b.value ? a : b);
-        topGenre = genreMap[topEntry.key] ?? "Unknown (${topEntry.key})";
-      }
-
-    } catch (e) {
-      print("Error in fetching profile stats: $e");
-      _error = e.toString();
-    }
-
-    // Update UI
-    setState(() {
-      _loading = false;
-    });
+  Future<void> _loadUsername() async {
+    final username = await _buddies.currentUsername();
+    if (mounted) setState(() => _username = username);
   }
 
-  Future<void> _saveUsername() async {
-    final user = _auth.currentUser;
-    if (user == null || _username == null || _username!.trim().isEmpty) return;
+  Future<void> _signOut() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        backgroundColor: AppColors.surface,
+        shape: RoundedRectangleBorder(borderRadius: AppRadius.all(AppRadius.lg)),
+        title: const Text('Sign out?', style: AppText.headingSm),
+        content: const Text(
+          'Your watchlist and buddies stay on your account.',
+          style: AppText.bodyMuted,
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            style: TextButton.styleFrom(foregroundColor: AppColors.danger),
+            child: const Text('Sign out'),
+          ),
+        ],
+      ),
+    );
 
-    try {
-      await _db.collection('users').doc(user.uid).update({
-        'username': _username!.trim(),
-        'username_lowercase': _username!.trim().toLowerCase(),
-      });
-      setState(() {
-        _editing = false;
-      });
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("Username updated successfully")),
-      );
-    } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text("Failed to update username: $e")),
-      );
-    }
+    if (confirmed == true) await FirebaseAuth.instance.signOut();
   }
 
-  Future<void> _logout() async {
-    await _auth.signOut();
-    if (!mounted) return;
-    Navigator.of(context).pushReplacementNamed('/login');
+  Future<void> _open(String url) async {
+    final uri = Uri.parse(url);
+    if (!await launchUrl(uri, mode: LaunchMode.externalApplication) && mounted) {
+      showAppSnack(context, 'Could not open $url');
+    }
   }
 
   @override
   Widget build(BuildContext context) {
-    if (_loading) {
-      return Scaffold(
-        backgroundColor: const Color(0xFF121212),
-        body: const Center(
-          child: CircularProgressIndicator(color: Color(0xFFDAA520)),
-        ),
-      );
-    }
-
-    if (_error != null) {
-      return Scaffold(
-        backgroundColor: const Color(0xFF121212),
-        body: Center(
-          child: Text(_error!,
-              style: const TextStyle(color: Colors.redAccent, fontSize: 16)),
-        ),
-      );
-    }
+    final user = FirebaseAuth.instance.currentUser;
 
     return Scaffold(
-      backgroundColor: const Color(0xFF121212),
+      backgroundColor: AppColors.bg,
       body: SafeArea(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 24),
-          child: Column(
-            children: [
-              CircleAvatar(
-                radius: 50,
-                backgroundImage: _avatar != null
-                    ? NetworkImage(_avatar!)
-                    : NetworkImage(
-                    'https://www.gravatar.com/avatar/${_auth.currentUser?.uid}?d=mp&f=y'),
-              ),
-              const SizedBox(height: 16),
-              AnimatedSwitcher(
-                duration: const Duration(milliseconds: 300),
-                child: _editing
-                    ? Column(
-                  children: [
-                    TextField(
-                      onChanged: (v) => _username = v,
-                      controller:
-                      TextEditingController(text: _username ?? ''),
-                      decoration: InputDecoration(
-                        filled: true,
-                        fillColor: const Color(0xFF282828),
-                        border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(12),
-                          borderSide: const BorderSide(
-                              color: Color(0xFFDAA520), width: 1.2),
-                        ),
-                        hintText: "Enter new username",
-                        hintStyle: const TextStyle(color: Colors.grey),
-                      ),
-                      style: const TextStyle(
-                          color: Color(0xFFEAEAEA), fontSize: 16),
-                    ),
-                    const SizedBox(height: 10),
-                    ElevatedButton.icon(
-                      onPressed: _saveUsername,
-                      icon: const Icon(Icons.save, color: Colors.black),
-                      label: const Text("Save",
-                          style: TextStyle(color: Colors.black)),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: const Color(0xFFDAA520),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(10),
-                        ),
-                      ),
-                    ),
-                    TextButton(
-                      onPressed: () =>
-                          setState(() => _editing = false),
-                      child: const Text("Cancel",
-                          style: TextStyle(color: Colors.grey)),
-                    ),
-                  ],
-                )
-                    : Column(
-                  children: [
-                    Text(
-                      _username ?? "Username not set",
-                      style: const TextStyle(
-                          fontSize: 20,
-                          color: Color(0xFFEAEAEA),
-                          fontWeight: FontWeight.bold),
-                    ),
-                    const SizedBox(height: 4),
-                    Text(_email ?? "",
-                        style:
-                        const TextStyle(color: Color(0xFFA0A0A0))),
-                    const SizedBox(height: 8),
-                    OutlinedButton.icon(
-                      onPressed: () => setState(() => _editing = true),
-                      icon:
-                      const Icon(Icons.edit, color: Color(0xFFDAA520)),
-                      label: const Text("Edit Username",
-                          style: TextStyle(color: Color(0xFFDAA520))),
-                      style: OutlinedButton.styleFrom(
-                        side: const BorderSide(
-                            color: Color(0xFFDAA520), width: 1),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(10),
-                        ),
-                      ),
-                    ),
-                  ],
+        bottom: false,
+        child: ListView(
+          padding: const EdgeInsets.only(bottom: AppSpace.xxl),
+          children: [
+            const PageHeader(eyebrow: 'Account', title: 'Profile'),
+            _IdentityCard(
+              username: _username.isEmpty ? (user?.displayName ?? 'You') : _username,
+              email: user?.email ?? '',
+              photoUrl: user?.photoURL,
+            ),
+            const SizedBox(height: AppSpace.xl),
+            _StatsRow(library: _library, buddies: _buddies),
+            const SizedBox(height: AppSpace.xl),
+            _SettingsGroup(
+              title: 'Activity',
+              tiles: [
+                _SettingsTile(
+                  icon: Icons.auto_awesome_rounded,
+                  label: 'Recommended by buddies',
+                  onTap: () => Navigator.of(context).push(
+                    MaterialPageRoute(builder: (_) => const RecommendedScreen()),
+                  ),
                 ),
-              ),
-              const SizedBox(height: 30),
-              const Divider(color: Color(0xFF333333)),
-              const SizedBox(height: 10),
-              const Text(
-                "Your Stats",
-                style: TextStyle(
-                    color: Color(0xFFEAEAEA),
-                    fontSize: 18,
-                    fontWeight: FontWeight.w600),
-              ),
-              const SizedBox(height: 12),
-              Wrap(
-                spacing: 10,
-                runSpacing: 10,
-                alignment: WrapAlignment.center,
+              ],
+            ),
+            _SettingsGroup(
+              title: 'StreamSynx',
+              tiles: [
+                _SettingsTile(
+                  icon: Icons.tv_rounded,
+                  label: 'Get the TV app',
+                  subtitle: 'Android TV, with the same account',
+                  onTap: () => _open(DeepLinks.download),
+                ),
+                _SettingsTile(
+                  icon: Icons.public_rounded,
+                  label: 'Open the website',
+                  onTap: () => _open(DeepLinks.site),
+                ),
+              ],
+            ),
+            _SettingsGroup(
+              title: 'Account',
+              tiles: [
+                _SettingsTile(
+                  icon: Icons.logout_rounded,
+                  label: 'Sign out',
+                  tone: AppColors.danger,
+                  onTap: _signOut,
+                ),
+              ],
+            ),
+            const SizedBox(height: AppSpace.lg),
+            const Center(
+              child: Text('StreamSynx 2.0.0', style: AppText.caption),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _IdentityCard extends StatelessWidget {
+  const _IdentityCard({
+    required this.username,
+    required this.email,
+    required this.photoUrl,
+  });
+
+  final String username;
+  final String email;
+  final String? photoUrl;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: AppSpace.gutter),
+      padding: const EdgeInsets.all(AppSpace.lg),
+      decoration: AppDecoration.surface(),
+      child: Row(
+        children: [
+          CircleAvatar(
+            radius: 28,
+            backgroundColor: AppColors.accentAt(0.16),
+            backgroundImage:
+                (photoUrl != null && photoUrl!.isNotEmpty) ? NetworkImage(photoUrl!) : null,
+            child: (photoUrl == null || photoUrl!.isEmpty)
+                ? Text(
+                    username.isEmpty ? '?' : username[0].toUpperCase(),
+                    style: AppText.headingLg.copyWith(color: AppColors.accent),
+                  )
+                : null,
+          ),
+          const SizedBox(width: AppSpace.lg),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(username, style: AppText.headingSm, maxLines: 1),
+                if (email.isNotEmpty) ...[
+                  const SizedBox(height: 2),
+                  Text(
+                    email,
+                    style: AppText.caption,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ],
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _StatsRow extends StatelessWidget {
+  const _StatsRow({required this.library, required this.buddies});
+
+  final LibraryRepo library;
+  final BuddiesRepo buddies;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: AppSpace.gutter),
+      child: Row(
+        children: [
+          Expanded(
+            child: _StatTile(
+              label: 'Watchlist',
+              stream: library.watchWatchlist().map((items) => items.length),
+            ),
+          ),
+          const SizedBox(width: AppSpace.md),
+          Expanded(
+            child: _StatTile(
+              label: 'Watched',
+              stream: library.watchHistory().map((items) => items.length),
+            ),
+          ),
+          const SizedBox(width: AppSpace.md),
+          Expanded(
+            child: _StatTile(
+              label: 'Buddies',
+              stream: buddies.watchFriends().map((items) => items.length),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _StatTile extends StatelessWidget {
+  const _StatTile({required this.label, required this.stream});
+
+  final String label;
+  final Stream<int> stream;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(vertical: AppSpace.lg),
+      decoration: AppDecoration.surface(radius: AppRadius.md),
+      child: Column(
+        children: [
+          StreamBuilder<int>(
+            stream: stream,
+            builder: (context, snapshot) => Text(
+              '${snapshot.data ?? 0}',
+              style: AppText.display.copyWith(fontSize: 26, color: AppColors.accent),
+            ),
+          ),
+          const SizedBox(height: AppSpace.xs),
+          Eyebrow(label),
+        ],
+      ),
+    );
+  }
+}
+
+class _SettingsGroup extends StatelessWidget {
+  const _SettingsGroup({required this.title, required this.tiles});
+
+  final String title;
+  final List<Widget> tiles;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(
+          AppSpace.gutter, 0, AppSpace.gutter, AppSpace.xl),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Eyebrow(title),
+          const SizedBox(height: AppSpace.md),
+          Container(
+            decoration: AppDecoration.surface(radius: AppRadius.md),
+            clipBehavior: Clip.antiAlias,
+            child: Column(children: tiles),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _SettingsTile extends StatelessWidget {
+  const _SettingsTile({
+    required this.icon,
+    required this.label,
+    required this.onTap,
+    this.subtitle,
+    this.tone,
+  });
+
+  final IconData icon;
+  final String label;
+  final VoidCallback onTap;
+  final String? subtitle;
+  final Color? tone;
+
+  @override
+  Widget build(BuildContext context) {
+    final color = tone ?? AppColors.textPrimary;
+
+    return InkWell(
+      onTap: onTap,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(
+            horizontal: AppSpace.lg, vertical: AppSpace.lg),
+        child: Row(
+          children: [
+            Icon(icon, size: 20, color: tone ?? AppColors.accent),
+            const SizedBox(width: AppSpace.lg),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  StatsCard(title: "Buddies", value: "$buddies"),
-                  StatsCard(title: "Movies Watched", value: "$moviesWatched"),
-                  StatsCard(title: "Episodes Watched", value: "$episodesWatched"),
-                  StatsCard(title: "Favorite Movies", value: "$favMovies"),
-                  // StatsCard(title: "Favorite Shows", value: "$favShows"),
-                  StatsCard(title: "Favorite Episodes", value: "$favEpisodes"),
-                  StatsCard(title: "Top Genre", value: topGenre),
+                  Text(label, style: AppText.label.copyWith(color: color)),
+                  if (subtitle != null) ...[
+                    const SizedBox(height: 2),
+                    Text(subtitle!, style: AppText.caption),
+                  ],
                 ],
               ),
-              const SizedBox(height: 30),
-              OutlinedButton.icon(
-                onPressed: _logout,
-                icon: const Icon(Icons.logout, color: Colors.redAccent),
-                label: const Text("Logout",
-                    style: TextStyle(color: Colors.redAccent)),
-                style: OutlinedButton.styleFrom(
-                  side: const BorderSide(color: Colors.redAccent),
-                ),
-              ),
-            ],
-          ),
+            ),
+            const Icon(Icons.chevron_right_rounded,
+                size: 20, color: AppColors.textSecondary),
+          ],
         ),
       ),
     );
