@@ -1,16 +1,11 @@
-import 'package:flutter/material.dart';
-import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:google_sign_in/google_sign_in.dart';
-import 'login_page.dart';
-import 'home_screen.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/material.dart';
 
-// Import theme colors from login page for consistency
-const Color primaryColor = Color(0xFF121212);
-const Color secondaryColor = Color(0xFF282828);
-const Color accentColor = Color(0xFFDAA520);
-const Color textPrimaryColor = Color(0xFFEAEAEA);
-const Color textSecondaryColor = Color(0xFFA0A0A0);
+import '../theme/app_theme.dart';
+import '../theme/tokens.dart';
+import '../widgets/app_chrome.dart';
+import 'auth_scaffold.dart';
 
 class SignupPage extends StatefulWidget {
   const SignupPage({super.key});
@@ -20,205 +15,143 @@ class SignupPage extends StatefulWidget {
 }
 
 class _SignupPageState extends State<SignupPage> {
-  final TextEditingController emailController = TextEditingController();
-  final TextEditingController passwordController = TextEditingController();
-  final TextEditingController usernameController = TextEditingController();
-  final FirebaseAuth _auth = FirebaseAuth.instance;
-  final FirebaseFirestore _firestore = FirebaseFirestore.instance;
-  bool isLoading = false;
-  bool isGoogleLoading = false;
+  final _username = TextEditingController();
+  final _email = TextEditingController();
+  final _password = TextEditingController();
 
-  // --- Email/Password Signup ---
-  void signup() async {
-    if (emailController.text.isEmpty ||
-        passwordController.text.isEmpty ||
-        usernameController.text.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Please fill in all fields.')),
-      );
+  bool _busy = false;
+  bool _googleBusy = false;
+  bool _obscure = true;
+
+  @override
+  void dispose() {
+    _username.dispose();
+    _email.dispose();
+    _password.dispose();
+    super.dispose();
+  }
+
+  String? _validate() {
+    if (_username.text.trim().length < 3) {
+      return 'Pick a username of at least three characters.';
+    }
+    if (!_email.text.contains('@')) return 'Enter a valid email address.';
+    if (_password.text.length < 6) {
+      return 'Passwords need to be at least six characters.';
+    }
+    return null;
+  }
+
+  Future<void> _createAccount() async {
+    final problem = _validate();
+    if (problem != null) {
+      showAppSnack(context, problem);
       return;
     }
-    setState(() => isLoading = true);
 
+    setState(() => _busy = true);
     try {
-      UserCredential userCred = await _auth.createUserWithEmailAndPassword(
-        email: emailController.text.trim(),
-        password: passwordController.text.trim(),
+      final username = _username.text.trim();
+
+      // Usernames are how buddies find each other, so a duplicate has to be
+      // caught before the account is created rather than after.
+      final taken = await FirebaseFirestore.instance
+          .collection('users')
+          .where('username', isEqualTo: username)
+          .limit(1)
+          .get();
+      if (taken.docs.isNotEmpty) {
+        if (mounted) showAppSnack(context, 'That username is taken. Try another.');
+        return;
+      }
+
+      final result = await FirebaseAuth.instance.createUserWithEmailAndPassword(
+        email: _email.text.trim(),
+        password: _password.text,
       );
 
-      await userCred.user?.updateDisplayName(usernameController.text.trim());
-      await _firestore.collection('users').doc(userCred.user!.uid).set({
-        'username': usernameController.text.trim(),
-        'email': emailController.text.trim(),
-        'avatar': null,
-        'friendUids': [],
-      });
-
-      if (mounted) {
-        Navigator.pushReplacement(
-          context,
-          MaterialPageRoute(builder: (_) => const HomeScreen()),
-        );
+      final user = result.user;
+      if (user != null) {
+        await user.updateDisplayName(username);
+        await GoogleAuth.ensureProfile(user, username: username);
       }
-    } on FirebaseAuthException catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(e.message ?? 'Signup failed')),
-        );
-      }
+      // The auth gate swaps to the app on its own once the user exists.
+    } on Object catch (error) {
+      if (mounted) showAppSnack(context, describeAuthError(error));
     } finally {
-      if (mounted) setState(() => isLoading = false);
+      if (mounted) setState(() => _busy = false);
     }
   }
 
-  // --- Google Sign-In (Firebase v6-compatible) ---
-  Future<void> signInWithGoogle() async {
-    if (!mounted) return;
-    setState(() => isGoogleLoading = true);
-
+  Future<void> _google() async {
+    setState(() => _googleBusy = true);
     try {
-      await GoogleSignIn.instance.initialize();
-
-      final GoogleSignInAccount googleUser =
-      await GoogleSignIn.instance.authenticate();
-
-      if (googleUser == null) return;
-
-      final GoogleSignInAuthentication googleAuth =
-      googleUser.authentication;
-
-      final OAuthCredential credential = GoogleAuthProvider.credential(
-        idToken: googleAuth.idToken,
-      );
-
-      final UserCredential userCredential =
-      await _auth.signInWithCredential(credential);
-      final User? user = userCredential.user;
-
-      if (user != null) {
-        final DocumentSnapshot userDoc =
-        await _firestore.collection('users').doc(user.uid).get();
-
-        if (!userDoc.exists) {
-          await _firestore.collection('users').doc(user.uid).set({
-            'username': user.displayName ?? 'New User',
-            'email': user.email,
-            'avatar': user.photoURL,
-            'friendUids': <String>[],
-          });
-        }
-
-        if (mounted) {
-          Navigator.pushReplacement(
-            context,
-            MaterialPageRoute(builder: (_) => const HomeScreen()),
-          );
-        }
-      }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Google Sign-In failed: ${e.toString()}')),
-        );
-      }
+      await GoogleAuth.signIn();
+    } on Object catch (error) {
+      if (mounted) showAppSnack(context, describeAuthError(error));
     } finally {
-      if (mounted) setState(() => isGoogleLoading = false);
+      if (mounted) setState(() => _googleBusy = false);
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    final inputDecoration = InputDecoration(
-      filled: true,
-      fillColor: secondaryColor,
-      enabledBorder: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(8),
-        borderSide: BorderSide.none,
-      ),
-      focusedBorder: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(8),
-        borderSide: const BorderSide(color: accentColor, width: 2),
-      ),
-    );
-
-    return Scaffold(
-      backgroundColor: primaryColor,
-      body: Center(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.all(24),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              const Text(
-                'Create Account',
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                    fontSize: 32,
-                    fontWeight: FontWeight.bold,
-                    color: accentColor),
-              ),
-              const SizedBox(height: 32),
-              TextField(
-                controller: usernameController,
-                style: const TextStyle(color: textPrimaryColor),
-                decoration: inputDecoration.copyWith(labelText: 'Username'),
-              ),
-              const SizedBox(height: 16),
-              TextField(
-                controller: emailController,
-                style: const TextStyle(color: textPrimaryColor),
-                decoration: inputDecoration.copyWith(labelText: 'Email'),
-              ),
-              const SizedBox(height: 16),
-              TextField(
-                controller: passwordController,
-                style: const TextStyle(color: textPrimaryColor),
-                obscureText: true,
-                decoration: inputDecoration.copyWith(labelText: 'Password'),
-              ),
-              const SizedBox(height: 24),
-              isLoading
-                  ? const Center(
-                  child: CircularProgressIndicator(color: accentColor))
-                  : ElevatedButton(
-                  onPressed: signup,
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: accentColor,
-                    foregroundColor: primaryColor,
-                    padding: const EdgeInsets.symmetric(vertical: 16),
-                    shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(8)),
-                  ),
-                  child: const Text('Sign Up',
-                      style: TextStyle(fontWeight: FontWeight.bold))),
-              const SizedBox(height: 16),
-              isGoogleLoading
-                  ? const Center(
-                  child: CircularProgressIndicator(color: accentColor))
-                  : ElevatedButton.icon(
-                onPressed: signInWithGoogle,
-                icon: Image.asset('assets/google_logo.png', height: 20),
-                label: const Text('Continue with Google',
-                    style: TextStyle(fontWeight: FontWeight.bold)),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: textPrimaryColor,
-                  foregroundColor: primaryColor,
-                  padding: const EdgeInsets.symmetric(vertical: 16),
-                  shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(8)),
-                ),
-              ),
-              const SizedBox(height: 16),
-              TextButton(
-                onPressed: () => Navigator.pop(context),
-                child: const Text(
-                  'Already have an account? Sign in',
-                  style: TextStyle(color: textSecondaryColor),
-                ),
-              ),
-            ],
+    return AuthScaffold(
+      title: 'Create your account',
+      subtitle: 'Save titles, keep your history, and watch along with buddies.',
+      children: [
+        AuthField(
+          controller: _username,
+          label: 'Username',
+          hint: 'How buddies will find you',
+          icon: Icons.person_outline_rounded,
+          textInputAction: TextInputAction.next,
+        ),
+        AuthField(
+          controller: _email,
+          label: 'Email',
+          hint: 'you@example.com',
+          icon: Icons.alternate_email_rounded,
+          keyboardType: TextInputType.emailAddress,
+          textInputAction: TextInputAction.next,
+        ),
+        AuthField(
+          controller: _password,
+          label: 'Password',
+          hint: 'At least six characters',
+          icon: Icons.lock_outline_rounded,
+          obscure: _obscure,
+          textInputAction: TextInputAction.done,
+          onSubmitted: (_) => _createAccount(),
+          trailing: IconButton(
+            icon: Icon(
+              _obscure ? Icons.visibility_outlined : Icons.visibility_off_outlined,
+              size: 19,
+              color: AppColors.textSecondary,
+            ),
+            onPressed: () => setState(() => _obscure = !_obscure),
           ),
         ),
+        const SizedBox(height: AppSpace.sm),
+        FilledButton(
+          onPressed: _busy ? null : _createAccount,
+          child: _busy
+              ? const SizedBox(
+                  width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))
+              : const Text('Create account'),
+        ),
+        const OrDivider(),
+        GoogleButton(loading: _googleBusy, onPressed: _google),
+      ],
+      footer: Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          const Text('Already have an account?', style: AppText.bodyMuted),
+          TextButton(
+            onPressed: () => Navigator.of(context).maybePop(),
+            child: const Text('Sign in'),
+          ),
+        ],
       ),
     );
   }
