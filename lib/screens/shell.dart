@@ -1,11 +1,17 @@
+import 'dart:async';
+
+import 'package:app_links/app_links.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../data/deep_links.dart';
+import '../data/tmdb.dart';
 import '../theme/app_theme.dart';
 import '../theme/tokens.dart';
 import 'buddies_screen.dart';
 import 'history_screen.dart';
 import 'home_screen.dart';
+import 'details_screen.dart';
 import 'profile_screen.dart';
 import 'watchlist_screen.dart';
 
@@ -31,6 +37,56 @@ class _AppShellState extends State<AppShell> {
 
   int _index = 0;
   final _navigatorKeys = List.generate(5, (_) => GlobalKey<NavigatorState>());
+
+  final AppLinks _appLinks = AppLinks();
+  StreamSubscription<Uri>? _links;
+
+  @override
+  void initState() {
+    super.initState();
+    _listenForLinks();
+  }
+
+  @override
+  void dispose() {
+    _links?.cancel();
+    super.dispose();
+  }
+
+  /// Handles a shared poster's link: both the one that launched the app cold and
+  /// any that arrive while it is already open.
+  Future<void> _listenForLinks() async {
+    try {
+      final initial = await _appLinks.getInitialLink();
+      if (initial != null) unawaited(_openLink(initial));
+    } on Object {
+      // A malformed launch intent should never stop the app from starting.
+    }
+    _links = _appLinks.uriLinkStream.listen(_openLink);
+  }
+
+  Future<void> _openLink(Uri uri) async {
+    final target = DeepLinks.parse(uri);
+    if (target == null) return;
+
+    try {
+      final detail = await Tmdb.detail(target.id, target.type);
+      if (!mounted) return;
+
+      // Titles always open on Home, so the back stack reads sensibly no matter
+      // which tab happened to be showing when the link arrived.
+      setState(() => _index = 0);
+      await _navigatorKeys[0].currentState?.push(
+            MaterialPageRoute(builder: (_) => DetailsScreen(item: detail.item)),
+          );
+    } on Object {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('That link could not be opened.')),
+        );
+      }
+    }
+  }
 
   /// Back pops the active tab's own stack first, then falls back to Home, and
   /// only then leaves the app.

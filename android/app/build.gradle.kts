@@ -25,11 +25,18 @@ android {
     }
 
     defaultConfig {
+        // Unchanged on purpose: the applicationId is the app's identity on a
+        // device, so altering it would make this a different app that existing
+        // users could not update to.
         applicationId = "com.example.streamsynx"
         minSdk = flutter.minSdkVersion
-        targetSdk = 36   // ✅ match compileSdk
-        versionCode = 1
-        versionName = "1.0"
+        targetSdk = 36
+
+        // Driven by the `version:` line in pubspec.yaml, so a release only has to
+        // be bumped in one place and Android sees the increment it needs to
+        // treat the build as an update.
+        versionCode = flutter.versionCode
+        versionName = flutter.versionName
     }
 
     buildTypes {
