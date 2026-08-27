@@ -99,7 +99,7 @@ class _SignupPageState extends State<SignupPage> {
     return AuthScaffold(
       title: 'Create your account',
       subtitle: 'Save titles, keep your history, and watch along with buddies.',
-      children: [
+      fields: [
         AuthField(
           controller: _username,
           label: 'Username',

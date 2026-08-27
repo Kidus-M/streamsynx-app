@@ -12,13 +12,13 @@ class AuthScaffold extends StatelessWidget {
     super.key,
     required this.title,
     required this.subtitle,
-    required this.children,
+    required this.fields,
     required this.footer,
   });
 
   final String title;
   final String subtitle;
-  final List<Widget> children;
+  final List<Widget> fields;
   final Widget footer;
 
   @override
@@ -67,7 +67,7 @@ class AuthScaffold extends StatelessWidget {
                   const SizedBox(height: AppSpace.sm),
                   Text(subtitle, style: AppText.bodyMuted),
                   const SizedBox(height: AppSpace.xxl),
-                  ...children,
+                  ...fields,
                   const SizedBox(height: AppSpace.xl),
                   footer,
                 ],

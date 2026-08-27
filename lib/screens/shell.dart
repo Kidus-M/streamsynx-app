@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../theme/app_theme.dart';
 import '../theme/tokens.dart';
@@ -31,7 +32,9 @@ class _AppShellState extends State<AppShell> {
   int _index = 0;
   final _navigatorKeys = List.generate(5, (_) => GlobalKey<NavigatorState>());
 
-  Future<bool> _onWillPop() async {
+  /// Back pops the active tab's own stack first, then falls back to Home, and
+  /// only then leaves the app.
+  bool _handleBack() {
     final navigator = _navigatorKeys[_index].currentState;
     if (navigator != null && navigator.canPop()) {
       navigator.pop();
@@ -48,11 +51,9 @@ class _AppShellState extends State<AppShell> {
   Widget build(BuildContext context) {
     return PopScope(
       canPop: false,
-      onPopInvokedWithResult: (didPop, _) async {
+      onPopInvokedWithResult: (didPop, _) {
         if (didPop) return;
-        if (await _onWillPop() && mounted) {
-          Navigator.of(context).pop();
-        }
+        if (_handleBack()) SystemNavigator.pop();
       },
       child: Scaffold(
         backgroundColor: AppColors.bg,

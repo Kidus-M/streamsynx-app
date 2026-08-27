@@ -86,7 +86,7 @@ class _LoginPageState extends State<LoginPage> {
     return AuthScaffold(
       title: 'Welcome back',
       subtitle: 'Sign in to reach your watchlist, history and buddies.',
-      children: [
+      fields: [
         AuthField(
           controller: _email,
           label: 'Email',
