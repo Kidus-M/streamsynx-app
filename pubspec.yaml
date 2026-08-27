@@ -30,27 +30,40 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-  firebase_core: ^3.15.2   # match latest cloud_firestore
+
+  # --- Firebase ---
+  firebase_core: ^3.15.2
   firebase_auth: ^5.7.0
-  cloud_firestore: ^5.6.12 # or ^5.5.0
-  google_fonts: ^5.0.0
-  # The following adds the Cupertino Icons font to your application.
-  # Use with the CupertinoIcons class for iOS style icons.
-  cupertino_icons: ^1.0.8
+  cloud_firestore: ^5.6.12
   google_sign_in: ^7.2.0
-  intl: ^0.19.0
-  carousel_slider: 4.2.0
+
+  # --- Networking ---
+  http: ^1.2.2
+  cached_network_image: ^3.3.1
+
+  # --- Playback ---
+  # video_player drives ExoPlayer on Android and AVPlayer on iOS, so HLS works on both.
+  video_player: ^2.9.2
+  # Loads a provider page off-screen so the stream can be resolved without ever
+  # rendering the advertising that comes with it. See lib/player/stream_resolver.dart.
+  flutter_inappwebview: ^6.1.5
+  wakelock_plus: ^1.2.8
+
+  # --- UI ---
+  google_fonts: ^5.0.0
+  cupertino_icons: ^1.0.8
   carousel_slider_plus: ^7.1.1
+  animations: ^2.0.8
+  blur: ^4.0.0
+
+  # --- Platform ---
   flutter_dotenv: ^5.1.0
   share_plus: ^10.0.0
-  cached_network_image: ^3.3.1
-#  screenshotx: ^1.0.0
-  blur: ^4.0.0
-  animations: ^2.0.8
   path_provider: ^2.0.15
   screenshot: ^3.0.0
   url_launcher: ^6.3.2
-  firebase_dynamic_links: ^6.1.10
+  intl: ^0.19.0
+
 dev_dependencies:
   flutter_test:
     sdk: flutter
