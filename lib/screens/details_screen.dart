@@ -144,12 +144,10 @@ class _DetailsScreenState extends State<DetailsScreen> {
 
       if (mounted) Navigator.of(context).pop();
 
-      await SharePlus.instance.share(
-        ShareParams(
-          files: [XFile(file.path)],
-          text: DeepLinks.shareText(item),
-          subject: '${item.title} on StreamSynx',
-        ),
+      await Share.shareXFiles(
+        [XFile(file.path)],
+        text: DeepLinks.shareText(item),
+        subject: '${item.title} on StreamSynx',
       );
     } on Object catch (error) {
       if (mounted) Navigator.of(context).pop();

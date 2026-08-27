@@ -84,7 +84,7 @@ class StreamResolver {
       },
       shouldOverrideUrlLoading: (controller, action) async {
         // The resolver has no business anywhere but the provider page.
-        final isMainFrame = action.isForMainFrame ?? true;
+        final isMainFrame = action.isForMainFrame;
         if (!isMainFrame || AdBlock.shouldBlock(action.request.url?.uriValue)) {
           return NavigationActionPolicy.CANCEL;
         }

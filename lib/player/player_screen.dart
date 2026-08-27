@@ -58,7 +58,6 @@ class _PlayerScreenState extends State<PlayerScreen> {
   late int _episode;
 
   VideoPlayerController? _controller;
-  InAppWebViewController? _webController;
   String? _fallbackUrl;
   String _fallbackHost = '';
 
@@ -204,7 +203,6 @@ class _PlayerScreenState extends State<PlayerScreen> {
     await controller?.dispose();
 
     await _resolver.dispose();
-    _webController = null;
     if (mounted) setState(() => _fallbackUrl = null);
   }
 
@@ -400,14 +398,13 @@ class _PlayerScreenState extends State<PlayerScreen> {
       return InAppWebView(
         initialUrlRequest: URLRequest(url: WebUri(fallbackUrl)),
         initialSettings: AdBlock.webViewSettings,
-        onWebViewCreated: (controller) => _webController = controller,
         shouldInterceptRequest: (controller, request) async =>
             AdBlock.shouldBlock(request.url.uriValue)
                 ? WebResourceResponse(contentType: 'text/plain', data: null)
                 : null,
         shouldOverrideUrlLoading: (controller, action) async {
           final target = action.request.url?.uriValue;
-          final isMainFrame = action.isForMainFrame ?? true;
+          final isMainFrame = action.isForMainFrame;
           if (AdBlock.shouldBlock(target)) return NavigationActionPolicy.CANCEL;
           // Only the provider may drive the top frame; anything else is a
           // redirect the viewer never asked for.

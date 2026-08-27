@@ -4,7 +4,6 @@ import 'package:flutter/material.dart';
 
 import '../data/models.dart';
 import '../data/tmdb.dart';
-import '../theme/app_theme.dart';
 import '../theme/tokens.dart';
 import '../widgets/app_chrome.dart';
 import '../widgets/poster_card.dart';

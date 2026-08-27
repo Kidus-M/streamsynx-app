@@ -5,7 +5,6 @@ import 'package:url_launcher/url_launcher.dart';
 import '../data/buddies_repo.dart';
 import '../data/deep_links.dart';
 import '../data/library_repo.dart';
-import '../data/models.dart';
 import '../theme/app_theme.dart';
 import '../theme/tokens.dart';
 import '../widgets/app_chrome.dart';

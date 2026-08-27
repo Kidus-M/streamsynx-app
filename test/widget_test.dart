@@ -1,31 +1,36 @@
-// This is a basic Flutter widget test.
-//
-// To perform an interaction with a widget in your test, use the WidgetTester
-// utility in the flutter_test package. For example, you can send tap and scroll
-// gestures. You can also use WidgetTester to find child widgets in the widget
-// tree, read text, and verify that the values of widget properties are correct.
-
-import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-
-import 'package:streamsynx/main.dart';
+import 'package:streamsynx/theme/tokens.dart';
+import 'package:streamsynx/data/deep_links.dart';
+import 'package:streamsynx/data/models.dart';
 
 void main() {
-  testWidgets('Counter increments smoke test', (WidgetTester tester) async {
-    // Build our app and trigger a frame.
-    await tester.pumpWidget(const StreamSynx());
+  group('DeepLinks', () {
+    final item = MediaItem(id: 42, type: 'movie', title: 'Test');
 
+    test('builds a shareable https link for a title', () {
+      expect(DeepLinks.forItem(item), 'https://streamsynx.vercel.app/open/movie/42');
+    });
 
-    // Verify that our counter starts at 0.
-    expect(find.text('0'), findsOneWidget);
-    expect(find.text('1'), findsNothing);
+    test('parses its own https link back', () {
+      final parsed = DeepLinks.parse(Uri.parse(DeepLinks.forItem(item)));
+      expect(parsed?.type, 'movie');
+      expect(parsed?.id, 42);
+    });
 
-    // Tap the '+' icon and trigger a frame.
-    await tester.tap(find.byIcon(Icons.add));
-    await tester.pump();
+    test('parses the private scheme, where the anchor sits in the host', () {
+      final parsed = DeepLinks.parse(Uri.parse('streamsynx://title/tv/99'));
+      expect(parsed?.type, 'tv');
+      expect(parsed?.id, 99);
+    });
 
-    // Verify that our counter has incremented.
-    expect(find.text('0'), findsNothing);
-    expect(find.text('1'), findsOneWidget);
+    test('rejects links that are not titles', () {
+      expect(DeepLinks.parse(Uri.parse('https://streamsynx.vercel.app/download')), isNull);
+      expect(DeepLinks.parse(Uri.parse('https://streamsynx.vercel.app/open/book/1')), isNull);
+    });
+  });
+
+  test('tokens match the web palette', () {
+    expect(AppColors.bg.toARGB32(), 0xFF0B0B0E);
+    expect(AppColors.accent.toARGB32(), 0xFFE9B949);
   });
 }
