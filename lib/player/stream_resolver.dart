@@ -1,4 +1,6 @@
 import 'dart:async';
+import 'dart:typed_data';
+import 'dart:ui' show Size;
 
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 
@@ -49,6 +51,7 @@ class StreamResolver {
   Completer<ResolvedStream?>? _completer;
   Timer? _timer;
   DateTime _startedAt = DateTime.now();
+  String _host = '';
   bool _settled = false;
 
   /// Loads [pageUrl] off-screen and returns the stream it plays, or null if
@@ -58,14 +61,19 @@ class StreamResolver {
 
     _settled = false;
     _startedAt = DateTime.now();
+    _host = Uri.tryParse(pageUrl)?.host ?? '';
     final completer = Completer<ResolvedStream?>();
     _completer = completer;
 
     _timer = Timer(_timeout, () => _settle(null));
 
     _webView = HeadlessInAppWebView(
+      // A real viewport matters even off-screen: these players check their own
+      // dimensions before requesting a manifest, and a zero-sized view never
+      // gets past that check.
+      initialSize: const Size(1280, 720),
       initialUrlRequest: URLRequest(url: WebUri(pageUrl)),
-      initialSettings: AdBlock.webViewSettings,
+      initialSettings: AdBlock.resolverSettings,
       shouldInterceptRequest: (controller, request) async {
         final uri = request.url.uriValue;
         if (AdBlock.shouldBlock(uri)) return _blocked;
@@ -86,12 +94,18 @@ class StreamResolver {
         return null;
       },
       shouldOverrideUrlLoading: (controller, action) async {
-        // The resolver has no business anywhere but the provider page.
+        final target = action.request.url?.uriValue;
+        if (AdBlock.shouldBlock(target)) return NavigationActionPolicy.CANCEL;
+
+        // Subframes have to be allowed. These providers load their actual
+        // player into an iframe, so cancelling non-main-frame navigation
+        // cancels the one thing the resolver is here to find.
         final isMainFrame = action.isForMainFrame;
-        if (!isMainFrame || AdBlock.shouldBlock(action.request.url?.uriValue)) {
-          return NavigationActionPolicy.CANCEL;
-        }
-        return NavigationActionPolicy.ALLOW;
+        if (!isMainFrame) return NavigationActionPolicy.ALLOW;
+
+        return AdBlock.isSameProvider(_host, target)
+            ? NavigationActionPolicy.ALLOW
+            : NavigationActionPolicy.CANCEL;
       },
       onCreateWindow: (controller, action) async {
         // Refusing the window is what stops a pop-under becoming a screen.
@@ -175,10 +189,10 @@ class StreamResolver {
     return carried;
   }
 
-  static final _blocked = WebResourceResponse(
-    contentType: 'text/plain',
-    data: null,
-    statusCode: 200,
-    reasonPhrase: 'OK',
-  );
+  static WebResourceResponse get _blocked => WebResourceResponse(
+        contentType: 'text/plain',
+        data: Uint8List(0),
+        statusCode: 200,
+        reasonPhrase: 'OK',
+      );
 }

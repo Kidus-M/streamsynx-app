@@ -73,8 +73,7 @@ class AdBlock {
     return lower.startsWith('www.') ? lower.substring(4) : lower;
   }
 
-  /// Settings shared by the resolver and the visible fallback.
-  static InAppWebViewSettings get webViewSettings => InAppWebViewSettings(
+  static InAppWebViewSettings _base() => InAppWebViewSettings(
         javaScriptEnabled: true,
         // Two of the three popup routes close right here.
         javaScriptCanOpenWindowsAutomatically: false,
@@ -82,19 +81,35 @@ class AdBlock {
         mediaPlaybackRequiresUserGesture: false,
         useShouldOverrideUrlLoading: true,
         useShouldInterceptRequest: true,
-        transparentBackground: true,
         allowsInlineMediaPlayback: true,
-        contentBlockers: contentBlockers,
+        useHybridComposition: true,
       );
 
-  /// WebKit content-blocker rules. Unlike request interception these also apply
-  /// on iOS, so the visible fallback is filtered on both platforms.
+  /// Settings for the headless resolver.
+  ///
+  /// Deliberately carries no content blockers. Filtering here is done by
+  /// `shouldInterceptRequest`, which is precise about what it drops; a broad
+  /// rule list is the kind of thing that quietly starves the provider's own
+  /// player of a script it needed and leaves the page sitting on an error.
+  static InAppWebViewSettings get resolverSettings => _base();
+
+  /// Settings for the visible fallback, where the page is actually on screen
+  /// and therefore worth the extra belt-and-braces filtering.
+  static InAppWebViewSettings get webViewSettings =>
+      _base()..contentBlockers = contentBlockers;
+
+  /// Content-blocker rules. These also apply on iOS, where request
+  /// interception is unavailable.
+  ///
+  /// The trigger matches the *resource* URL. An earlier version used
+  /// `ifDomain`, which WebKit matches against the document's domain instead —
+  /// it would have blocked everything on an ad host's own page and nothing
+  /// anywhere else.
   static List<ContentBlocker> get contentBlockers => [
         for (final host in blockedHosts)
           ContentBlocker(
             trigger: ContentBlockerTrigger(
-              urlFilter: '.*',
-              ifDomain: ['*$host'],
+              urlFilter: '.*${RegExp.escape(host)}.*',
             ),
             action: ContentBlockerAction(type: ContentBlockerActionType.BLOCK),
           ),

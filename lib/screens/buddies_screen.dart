@@ -2,10 +2,16 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import 'package:cached_network_image/cached_network_image.dart';
+
 import '../data/buddies_repo.dart';
+import '../data/buddy_discovery.dart';
+import '../data/taste_profile.dart';
+import '../data/tmdb.dart';
 import '../theme/app_theme.dart';
 import '../theme/tokens.dart';
 import '../widgets/app_chrome.dart';
+import 'taste_picks_screen.dart';
 
 /// Friends, incoming requests, and finding people.
 ///
@@ -22,14 +28,27 @@ class BuddiesScreen extends StatefulWidget {
 class _BuddiesScreenState extends State<BuddiesScreen>
     with SingleTickerProviderStateMixin {
   final BuddiesRepo _repo = BuddiesRepo();
+  final BuddyDiscovery _discovery = BuddyDiscovery();
   final TextEditingController _search = TextEditingController();
 
-  late final TabController _tabs = TabController(length: 3, vsync: this);
+  late final TabController _tabs = TabController(length: 4, vsync: this);
+
+  Future<DiscoveryResult>? _discoverFuture;
 
   Timer? _debounce;
   List<BuddyProfile> _results = const [];
   bool _searching = false;
   final Set<String> _busy = {};
+
+  @override
+  void initState() {
+    super.initState();
+    _refreshDiscovery();
+  }
+
+  void _refreshDiscovery() {
+    setState(() => _discoverFuture = _discovery.discover());
+  }
 
   @override
   void dispose() {
@@ -86,16 +105,23 @@ class _BuddiesScreenState extends State<BuddiesScreen>
         bottom: false,
         child: Column(
           children: [
-            const PageHeader(
+            PageHeader(
               eyebrow: 'Together',
               title: 'Buddies',
-              subtitle: 'Share what you are watching with people you know.',
+              subtitle: 'Find people who like what you like.',
+              trailing: IconButton(
+                onPressed: _openTastePicks,
+                icon: const Icon(Icons.tune_rounded),
+                color: AppColors.textSecondary,
+                tooltip: 'Edit your taste',
+              ),
             ),
             _RequestBadgeTabs(repo: _repo, controller: _tabs),
             Expanded(
               child: TabBarView(
                 controller: _tabs,
                 children: [
+                  _discoverTab(),
                   _friendsTab(),
                   _requestsTab(),
                   _addTab(),
@@ -105,6 +131,90 @@ class _BuddiesScreenState extends State<BuddiesScreen>
           ],
         ),
       ),
+    );
+  }
+
+  Future<void> _openTastePicks() async {
+    final saved = await Navigator.of(context).push<bool>(
+      MaterialPageRoute(builder: (_) => const TastePicksScreen()),
+    );
+    if (saved == true) _refreshDiscovery();
+  }
+
+  /// Ranked taste matches. Everything here is derived from the eight picks the
+  /// viewer chose, so an empty profile gets a prompt rather than an empty list.
+  Widget _discoverTab() {
+    return FutureBuilder<DiscoveryResult>(
+      future: _discoverFuture,
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return const Center(child: CircularProgressIndicator());
+        }
+        if (snapshot.hasError) {
+          return ErrorState(
+            message: 'Could not work out your matches. ${snapshot.error}',
+            onRetry: _refreshDiscovery,
+          );
+        }
+
+        final result = snapshot.data ?? const DiscoveryResult();
+        if (result.needsPicks) {
+          return EmptyState(
+            icon: Icons.interests_rounded,
+            title: 'Tell us your taste',
+            message: 'Pick a few films and series you love, and we will find people '
+                'whose taste lines up with yours.',
+            actionLabel: 'Choose your picks',
+            onAction: _openTastePicks,
+          );
+        }
+        if (result.matches.isEmpty) {
+          return EmptyState(
+            icon: Icons.travel_explore_rounded,
+            title: 'No matches yet',
+            message: 'Nobody close enough to your taste has signed up yet. '
+                'Adding more picks widens the net.',
+            actionLabel: 'Edit your taste',
+            onAction: _openTastePicks,
+          );
+        }
+
+        return RefreshIndicator(
+          onRefresh: () async => _refreshDiscovery(),
+          color: AppColors.accent,
+          backgroundColor: AppColors.surface,
+          child: StreamBuilder<Set<String>>(
+            stream: _repo.watchOutgoingRequests(),
+            builder: (context, sentSnapshot) {
+              final sent = sentSnapshot.data ?? const <String>{};
+
+              return ListView.builder(
+                padding: const EdgeInsets.fromLTRB(
+                    AppSpace.gutter, AppSpace.sm, AppSpace.gutter, AppSpace.xxl),
+                itemCount: result.matches.length,
+                itemBuilder: (_, index) {
+                  final entry = result.matches[index];
+                  return _MatchCard(
+                    entry: entry,
+                    pending: sent.contains(entry.profile.uid),
+                    busy: _busy.contains(entry.profile.uid),
+                    onAdd: () => _run(
+                      entry.profile.uid,
+                      () => _repo.sendRequest(entry.profile.uid),
+                      'Request sent to ${entry.profile.username}',
+                    ),
+                    onCancel: () => _run(
+                      entry.profile.uid,
+                      () => _repo.cancelRequest(entry.profile.uid),
+                      'Request withdrawn',
+                    ),
+                  );
+                },
+              );
+            },
+          ),
+        );
+      },
     );
   }
 
@@ -349,6 +459,7 @@ class _RequestBadgeTabs extends StatelessWidget {
         return TabBar(
           controller: controller,
           tabs: [
+            const Tab(text: 'Discover'),
             const Tab(text: 'Buddies'),
             Tab(
               child: Row(
@@ -473,6 +584,154 @@ class _TileAction extends StatelessWidget {
             height: 38,
             child: Icon(icon, size: 19, color: tone),
           ),
+        ),
+      ),
+    );
+  }
+}
+
+/// One ranked suggestion: who they are, how strong the match is, why, and the
+/// picks that drove it.
+class _MatchCard extends StatelessWidget {
+  const _MatchCard({
+    required this.entry,
+    required this.pending,
+    required this.busy,
+    required this.onAdd,
+    required this.onCancel,
+  });
+
+  final BuddyMatch entry;
+  final bool pending;
+  final bool busy;
+  final VoidCallback onAdd;
+  final VoidCallback onCancel;
+
+  @override
+  Widget build(BuildContext context) {
+    final reasons = entry.match.reasons;
+    final picks = entry.picks.all.take(4).toList();
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: AppSpace.md),
+      padding: const EdgeInsets.all(AppSpace.lg),
+      decoration: AppDecoration.surface(),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              CircleAvatar(
+                radius: 22,
+                backgroundColor: AppColors.surfaceHigh,
+                backgroundImage: NetworkImage(entry.profile.avatarUrl),
+                onBackgroundImageError: (_, __) {},
+                child: Text(
+                  entry.profile.initial,
+                  style: AppText.label.copyWith(color: AppColors.textSecondary),
+                ),
+              ),
+              const SizedBox(width: AppSpace.md),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      entry.profile.username,
+                      style: AppText.label,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    const SizedBox(height: 2),
+                    Text(entry.match.tier.label, style: AppText.caption),
+                  ],
+                ),
+              ),
+              _ScorePill(percent: entry.match.percent),
+            ],
+          ),
+
+          if (reasons.isNotEmpty) ...[
+            const SizedBox(height: AppSpace.md),
+            Wrap(
+              spacing: AppSpace.sm,
+              runSpacing: AppSpace.sm,
+              children: [
+                for (final reason in reasons.take(3)) AppChip(label: reason),
+              ],
+            ),
+          ],
+
+          if (picks.isNotEmpty) ...[
+            const SizedBox(height: AppSpace.md),
+            SizedBox(
+              height: 84,
+              child: ListView.separated(
+                scrollDirection: Axis.horizontal,
+                itemCount: picks.length,
+                separatorBuilder: (_, __) => const SizedBox(width: AppSpace.sm),
+                itemBuilder: (_, index) {
+                  final poster = Tmdb.image(picks[index].posterPath, Tmdb.w185);
+                  return ClipRRect(
+                    borderRadius: AppRadius.all(AppRadius.sm),
+                    child: SizedBox(
+                      width: 56,
+                      child: poster == null
+                          ? const ColoredBox(color: AppColors.surfaceHigh)
+                          : CachedNetworkImage(imageUrl: poster, fit: BoxFit.cover),
+                    ),
+                  );
+                },
+              ),
+            ),
+          ],
+
+          const SizedBox(height: AppSpace.md),
+          SizedBox(
+            width: double.infinity,
+            child: busy
+                ? const Center(
+                    child: SizedBox(
+                      width: 22, height: 22, child: CircularProgressIndicator(strokeWidth: 2)),
+                  )
+                : pending
+                    ? OutlinedButton.icon(
+                        onPressed: onCancel,
+                        icon: const Icon(Icons.hourglass_bottom_rounded, size: 18),
+                        label: const Text('Request sent'),
+                      )
+                    : FilledButton.icon(
+                        onPressed: onAdd,
+                        icon: const Icon(Icons.person_add_alt_1_rounded, size: 18),
+                        label: const Text('Add buddy'),
+                      ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ScorePill extends StatelessWidget {
+  const _ScorePill({required this.percent});
+
+  final int percent;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: AppSpace.md, vertical: 6),
+      decoration: BoxDecoration(
+        color: AppColors.accentAt(0.14),
+        borderRadius: AppRadius.all(AppRadius.pill),
+        border: Border.all(color: AppColors.accentAt(0.35)),
+      ),
+      child: Text(
+        '$percent%',
+        style: AppText.label.copyWith(
+          color: AppColors.accent,
+          fontWeight: FontWeight.w700,
+          fontSize: 13,
         ),
       ),
     );

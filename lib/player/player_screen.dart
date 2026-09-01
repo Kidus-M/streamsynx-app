@@ -74,8 +74,9 @@ class _PlayerScreenState extends State<PlayerScreen> {
     _sources = StreamSource.forItem(widget.item);
 
     WakelockPlus.enable();
+    // Video is a landscape medium: the player rotates into it and stays there,
+    // rather than leaving a letterboxed strip in the middle of a tall screen.
     SystemChrome.setPreferredOrientations([
-      DeviceOrientation.portraitUp,
       DeviceOrientation.landscapeLeft,
       DeviceOrientation.landscapeRight,
     ]);
@@ -95,7 +96,10 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
     WakelockPlus.disable();
     SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
-    SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+    SystemChrome.setEnabledSystemUIMode(
+      SystemUiMode.manual,
+      overlays: SystemUiOverlay.values,
+    );
     super.dispose();
   }
 
@@ -400,15 +404,20 @@ class _PlayerScreenState extends State<PlayerScreen> {
         initialSettings: AdBlock.webViewSettings,
         shouldInterceptRequest: (controller, request) async =>
             AdBlock.shouldBlock(request.url.uriValue)
-                ? WebResourceResponse(contentType: 'text/plain', data: null)
+                ? WebResourceResponse(
+                    contentType: 'text/plain',
+                    data: Uint8List(0),
+                  )
                 : null,
         shouldOverrideUrlLoading: (controller, action) async {
           final target = action.request.url?.uriValue;
-          final isMainFrame = action.isForMainFrame;
           if (AdBlock.shouldBlock(target)) return NavigationActionPolicy.CANCEL;
+
           // Only the provider may drive the top frame; anything else is a
-          // redirect the viewer never asked for.
-          if (isMainFrame && !AdBlock.isSameProvider(_fallbackHost, target)) {
+          // redirect the viewer never asked for. Subframes stay allowed —
+          // the provider's player lives in one.
+          if (action.isForMainFrame &&
+              !AdBlock.isSameProvider(_fallbackHost, target)) {
             return NavigationActionPolicy.CANCEL;
           }
           return NavigationActionPolicy.ALLOW;
