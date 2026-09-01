@@ -6,7 +6,6 @@ import 'package:cached_network_image/cached_network_image.dart';
 
 import '../data/buddies_repo.dart';
 import '../data/buddy_discovery.dart';
-import '../data/taste_profile.dart';
 import '../data/tmdb.dart';
 import '../theme/app_theme.dart';
 import '../theme/tokens.dart';

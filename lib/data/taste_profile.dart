@@ -333,7 +333,7 @@ class TasteRepo {
       ..sort((a, b) => b.value.compareTo(a.value));
     final kept = entries.take(cap).toList();
 
-    final norm = math.sqrt(kept.fold<double>(0, (sum, e) => sum + e.value * e.value));
+    final norm = math.sqrt(kept.fold<double>(0, (total, e) => total + e.value * e.value));
     if (norm == 0) return const {};
 
     return {
