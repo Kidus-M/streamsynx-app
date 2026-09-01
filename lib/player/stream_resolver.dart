@@ -79,6 +79,7 @@ class StreamResolver {
   String _origin = '';
   String _pageUrl = '';
   bool _settled = false;
+  bool _landed = false;
 
   /// Loads [pageUrl] off-screen and returns the stream it plays, or null if
   /// nothing recognisable turned up before [timeout].
@@ -98,6 +99,7 @@ class StreamResolver {
     final parsed = Uri.tryParse(pageUrl);
     _host = parsed?.host ?? '';
     _origin = parsed == null ? '' : '${parsed.scheme}://${parsed.host}';
+    _landed = false;
 
     final completer = Completer<ResolvedStream?>();
     _completer = completer;
@@ -147,6 +149,15 @@ class StreamResolver {
         // cancels the one thing the resolver is here to find.
         if (!action.isForMainFrame) return NavigationActionPolicy.ALLOW;
 
+        // Before the page has ever settled, a main-frame navigation is the
+        // provider's own redirect chain — several of them have moved host and
+        // now 301 to the new one. Blocking that is blocking the source itself.
+        // Once something has loaded, a main-frame navigation is a hijack.
+        if (!_landed) {
+          _adoptHost(target);
+          return NavigationActionPolicy.ALLOW;
+        }
+
         return AdBlock.isSameProvider(_host, target)
             ? NavigationActionPolicy.ALLOW
             : NavigationActionPolicy.CANCEL;
@@ -156,6 +167,8 @@ class StreamResolver {
         return false;
       },
       onLoadStop: (controller, url) async {
+        _landed = true;
+        _adoptHost(url);
         // The user scripts already ran at document start; this re-runs the
         // autoplay nudge for pages that only build their player after load.
         await controller.evaluateJavascript(source: AdBlock.autoplayScript);
@@ -222,6 +235,17 @@ class StreamResolver {
       referer: headers['Referer'] ?? _pageUrl,
       origin: _origin,
     ));
+  }
+
+  /// Follows the provider to wherever it has moved, so the same-provider guard
+  /// keeps protecting the page the viewer actually ended up on.
+  void _adoptHost(Uri? target) {
+    if (target == null || target.host.isEmpty) return;
+    if (!target.isScheme('http') && !target.isScheme('https')) return;
+
+    _host = target.host;
+    _origin = '${target.scheme}://${target.host}';
+    _pageUrl = target.toString();
   }
 
   void _settle(ResolvedStream? stream) {

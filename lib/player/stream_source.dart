@@ -71,9 +71,12 @@ class StreamSource {
       id: 'vidsrc',
       name: 'VidSrc',
       kind: SourceKind.embed,
-      movieTemplate: 'https://vidsrc-embed.ru/embed/movie?tmdb={tmdbId}&autoplay=1',
+      // vidsrc-embed.ru only 301s here now. Following that redirect inside the
+      // resolver meant a cross-host main-frame navigation, which the guard is
+      // there to cancel — so the source is pointed at its real home instead.
+      movieTemplate: 'https://vsembed.ru/embed/movie?tmdb={tmdbId}&autoplay=1',
       tvTemplate:
-          'https://vidsrc-embed.ru/embed/tv?tmdb={tmdbId}&season={season}&episode={episode}&autoplay=1',
+          'https://vsembed.ru/embed/tv?tmdb={tmdbId}&season={season}&episode={episode}&autoplay=1',
     ),
     StreamSource(
       id: 'vidfast',

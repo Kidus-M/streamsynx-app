@@ -117,6 +117,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
   VideoPlayerController? _controller;
   String? _embedUrl;
   String _embedHost = '';
+  bool _embedLanded = false;
 
   _Stage _stage = _Stage.loading;
   String _status = 'Getting things ready…';
@@ -305,6 +306,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
       _sourceIndex = index;
       _embedUrl = url;
       _embedHost = Uri.tryParse(url)?.host ?? '';
+      _embedLanded = false;
       _stage = _Stage.embedded;
       _failure = null;
       _status = '';
@@ -622,14 +624,23 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
           // Only the provider may drive the top frame; anything else is a
           // redirect the viewer never asked for. Subframes stay allowed —
           // the provider's player lives in one.
-          if (action.isForMainFrame &&
-              !AdBlock.isSameProvider(_embedHost, target)) {
-            return NavigationActionPolicy.CANCEL;
+          if (action.isForMainFrame) {
+            // The provider's own move to a new host happens before anything has
+            // loaded; a hijack happens after. Same rule as the resolver.
+            if (!_embedLanded) {
+              _embedHost = target?.host ?? _embedHost;
+              return NavigationActionPolicy.ALLOW;
+            }
+            if (!AdBlock.isSameProvider(_embedHost, target)) {
+              return NavigationActionPolicy.CANCEL;
+            }
           }
           return NavigationActionPolicy.ALLOW;
         },
         onCreateWindow: (controller, action) async => false,
         onLoadStop: (controller, url) async {
+          _embedLanded = true;
+          if (url != null && url.host.isNotEmpty) _embedHost = url.host;
           await controller.evaluateJavascript(source: AdBlock.hardeningScript);
         },
       );
