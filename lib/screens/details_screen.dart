@@ -1,10 +1,10 @@
 import 'dart:async';
 import 'dart:io';
-import 'dart:typed_data';
 
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:flutter/services.dart';
 import 'package:screenshot/screenshot.dart';
 import 'package:share_plus/share_plus.dart';
 
@@ -19,6 +19,7 @@ import '../theme/tokens.dart';
 import '../widgets/app_chrome.dart';
 import '../widgets/poster_card.dart';
 import '../widgets/share_poster.dart';
+import '../widgets/share_sheet.dart';
 
 /// A title's own screen: what it is, whether to play it, and for a series which
 /// episode. Everything on it comes from a single TMDB request.
@@ -89,14 +90,16 @@ class _DetailsScreenState extends State<DetailsScreen> {
   void _play(MediaItem item, {int episode = 1, String? episodeName}) {
     final count = _episodes.isEmpty ? 0 : _episodes.last.number;
 
-    Navigator.of(context).push(MaterialPageRoute(
-      builder: (_) => PlayerScreen(
-        item: item,
-        season: _season,
-        episode: episode,
-        episodeCount: count,
-        episodeName: episodeName,
-      ),
+    // Root navigator, deliberately: see [PlayerRoute]. Pushing into the tab's own
+    // stack left the bottom bar on top of the video.
+    unawaited(PlayerRoute.open(
+      context,
+      item: item,
+      season: _season,
+      episode: episode,
+      episodeCount: count,
+      episodeName: episodeName,
+      episodes: _episodes,
     ));
   }
 
@@ -117,6 +120,31 @@ class _DetailsScreenState extends State<DetailsScreen> {
   }
 
   // --- Sharing ------------------------------------------------------------------
+
+  /// Asks how to share, then does it.
+  ///
+  /// The link is the default. Handing a messaging app a PNG makes it send a
+  /// picture — the caption, and with it the URL, is dropped by most targets —
+  /// which is why a shared title used to arrive as something you could only look
+  /// at. A bare link unfurls into a card built from the `/open` page's Open Graph
+  /// tags, so the recipient gets artwork, a title and something to tap.
+  Future<void> _share(MediaItem item) async {
+    final choice = await showShareSheet(context, item: item);
+    if (choice == null || !mounted) return;
+
+    switch (choice) {
+      case ShareChoice.link:
+        await Share.share(
+          DeepLinks.shareText(item),
+          subject: '${item.title} on StreamSynx',
+        );
+      case ShareChoice.copy:
+        await Clipboard.setData(ClipboardData(text: DeepLinks.forItem(item)));
+        if (mounted) showAppSnack(context, 'Link copied', success: true);
+      case ShareChoice.poster:
+        await _sharePoster(item);
+    }
+  }
 
   /// Renders the story card and shares it with a link that opens this title in
   /// the app, or the download page for anyone who does not have it yet.
@@ -146,7 +174,7 @@ class _DetailsScreenState extends State<DetailsScreen> {
 
       await Share.shareXFiles(
         [XFile(file.path)],
-        text: DeepLinks.shareText(item),
+        text: DeepLinks.posterText(item),
         subject: '${item.title} on StreamSynx',
       );
     } on Object catch (error) {
@@ -245,7 +273,7 @@ class _DetailsScreenState extends State<DetailsScreen> {
                   favorite: _favorite,
                   onWatchlist: () => _toggleWatchlist(item),
                   onFavorite: () => _toggleFavorite(item),
-                  onShare: () => _sharePoster(item),
+                  onShare: () => _share(item),
                   onRecommend: () => _recommendToBuddy(item),
                 ),
               ),
