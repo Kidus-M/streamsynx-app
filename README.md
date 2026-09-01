@@ -3,6 +3,26 @@
 The Flutter client for Android and iOS. Same catalogue, same account and the same
 design tokens as the website and the TV app.
 
+## What changed in 2.2
+
+**The player is a mode, not a page.** It used to be pushed onto the active tab's
+own navigator, so the bottom bar sat over the video and the source sheet was
+trapped inside the space left above it — which is why the servers could not be
+picked. It opens on the root navigator now (`PlayerRoute`), full screen, with the
+server picker in the top bar under its own name.
+
+**It behaves like a phone player.** Double-tap either half to skip, hold for 2x,
+drag the scrub bar (buffered range and all), lock the screen against stray taps,
+zoom to fill, change speed, and switch episode without leaving the video.
+
+**It gets to a stream more often.** The resolver hooks `fetch`, `XHR` and
+`<video>.src` from inside the page as well as watching its requests, which is the
+only signal iOS gives at all; it follows a provider's own redirect to a host it
+has moved to; and if one provider will not hand over a stream the next is tried
+automatically instead of leaving a spinner.
+
+**Sharing sends a link.** See below.
+
 ## What changed in 2.0
 
 **There is a player.** Before this, pressing Play handed the viewer to their
@@ -51,13 +71,23 @@ half-applied friendship cannot happen. Requests are deleted rather than marked
 rejected, so the sender's button returns to "Add" instead of sitting on a pending
 state that can never resolve.
 
-## Shared posters
+## Shared links
 
-Sharing a title renders a story card and attaches one HTTPS link:
+Sharing a title sends one HTTPS link:
 
 ```
 https://streamsynx.vercel.app/open/<type>/<tmdbId>
 ```
+
+It used to send a PNG the app rendered on the phone, with the link as a caption.
+Hand a messaging app a file and it sends a file: most targets drop the caption,
+so a shared title arrived as a picture with nothing to tap. A bare link unfurls
+instead — `stream-sync/pages/api/og.jsx` draws a 1200×630 card per title and
+`/open` carries the Open Graph tags that point at it.
+
+The story card is still there, as an explicit choice in the share sheet, for the
+one place an image is genuinely better: an Instagram or WhatsApp story, where the
+link is not tappable and has to be readable instead.
 
 With the app installed, Android hands that verified App Link straight to
 `AppShell`, which opens the title. Without it, the visitor lands on the site's

@@ -127,6 +127,18 @@ class AdBlock {
   static InAppWebViewSettings get webViewSettings =>
       _base()..contentBlockers = contentBlockers;
 
+  /// Hardening for the visible fallback, in every frame and before the page's
+  /// own scripts. An interstitial that lives in an iframe is not reachable from
+  /// a script evaluated in the main frame after load, which is all this used to
+  /// get. No autoplay nudge here — there is a viewer to press play.
+  static List<UserScript> get embedScripts => [
+        UserScript(
+          source: hardeningScript,
+          injectionTime: UserScriptInjectionTime.AT_DOCUMENT_END,
+          forMainFrameOnly: false,
+        ),
+      ];
+
   /// Content-blocker rules. These also apply on iOS, where request
   /// interception is unavailable.
   ///

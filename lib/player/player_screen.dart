@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:collection';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -634,6 +635,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
         key: ValueKey(embedUrl),
         initialUrlRequest: URLRequest(url: WebUri(embedUrl)),
         initialSettings: AdBlock.webViewSettings,
+        initialUserScripts: UnmodifiableListView(AdBlock.embedScripts),
         shouldInterceptRequest: (controller, request) async =>
             AdBlock.shouldBlock(request.url.uriValue)
                 ? WebResourceResponse(
