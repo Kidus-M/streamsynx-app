@@ -266,7 +266,9 @@ class PlayerControls extends StatelessWidget {
           fit: StackFit.expand,
           children: [
             // The scrim only exists where there is text over the picture, and it
-            // never intercepts a touch: the gesture layer underneath does.
+            // never intercepts a touch: the gesture layer underneath does. In the
+            // embedded fallback there is no bottom bar to darken behind, and the
+            // provider's own controls live down there.
             IgnorePointer(
               child: DecoratedBox(
                 decoration: BoxDecoration(
@@ -277,7 +279,7 @@ class PlayerControls extends StatelessWidget {
                       AppColors.black(0.78),
                       AppColors.black(0.06),
                       AppColors.black(0.06),
-                      AppColors.black(0.86),
+                      AppColors.black(stage == ControlsStage.embedded ? 0 : 0.86),
                     ],
                     stops: const [0, 0.3, 0.62, 1],
                   ),
@@ -298,7 +300,8 @@ class PlayerControls extends StatelessWidget {
                     onMore: stage == ControlsStage.embedded ? null : onMore,
                   ),
                   Expanded(child: Center(child: _buildCentre())),
-                  if (stage != ControlsStage.failed)
+                  if (stage == ControlsStage.playing ||
+                      stage == ControlsStage.loading)
                     _BottomBar(
                       controller: _isPlaying ? controller : null,
                       status: status,
@@ -333,11 +336,20 @@ class PlayerControls extends StatelessWidget {
       case ControlsStage.embedded:
         return const SizedBox.shrink();
       case ControlsStage.playing:
-        return _Transport(
-          playing: controller?.value.isPlaying ?? false,
-          skip: skip,
-          onTogglePlay: onTogglePlay,
-          onSeekBy: onSeekBy,
+        final controller = this.controller;
+        if (controller == null) return const SizedBox.shrink();
+
+        // The icon has to follow the engine, not the last tap: playback also
+        // stops on its own at the end of a stream or when the buffer runs dry.
+        return ValueListenableBuilder<VideoPlayerValue>(
+          valueListenable: controller,
+          builder: (context, value, _) => _Transport(
+            playing: value.isPlaying,
+            buffering: value.isBuffering,
+            skip: skip,
+            onTogglePlay: onTogglePlay,
+            onSeekBy: onSeekBy,
+          ),
         );
     }
   }
@@ -419,12 +431,14 @@ class _TopBar extends StatelessWidget {
 class _Transport extends StatelessWidget {
   const _Transport({
     required this.playing,
+    required this.buffering,
     required this.skip,
     required this.onTogglePlay,
     required this.onSeekBy,
   });
 
   final bool playing;
+  final bool buffering;
   final Duration skip;
   final Future<void> Function() onTogglePlay;
   final ValueChanged<Duration> onSeekBy;
@@ -439,11 +453,26 @@ class _Transport extends StatelessWidget {
           onTap: () => onSeekBy(-skip),
         ),
         const SizedBox(width: AppSpace.xxl),
-        RoundControl(
-          icon: playing ? Icons.pause_rounded : Icons.play_arrow_rounded,
-          primary: true,
-          onTap: () => unawaited(onTogglePlay()),
-        ),
+        // The spinner replaces the button rather than sitting on top of it, so
+        // there is never a play icon that does nothing when tapped.
+        if (buffering)
+          const SizedBox(
+            width: 68,
+            height: 68,
+            child: Center(
+              child: SizedBox(
+                width: 40,
+                height: 40,
+                child: CircularProgressIndicator(strokeWidth: 3),
+              ),
+            ),
+          )
+        else
+          RoundControl(
+            icon: playing ? Icons.pause_rounded : Icons.play_arrow_rounded,
+            primary: true,
+            onTap: () => unawaited(onTogglePlay()),
+          ),
         const SizedBox(width: AppSpace.xxl),
         RoundControl(
           icon: Icons.forward_10_rounded,

@@ -181,7 +181,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
   void didChangeAppLifecycleState(AppLifecycleState state) {
     // Leaving the app should not leave audio running, and should not lose the
     // viewer's place if the process is reclaimed while backgrounded.
-    if (state == AppLifecycleState.paused || state == AppLifecycleState.inactive) {
+    if (state == AppLifecycleState.paused || state == AppLifecycleState.hidden) {
       final controller = _controller;
       if (controller != null && controller.value.isPlaying) {
         unawaited(controller.pause());
@@ -476,9 +476,12 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
 
   void _scheduleHide() {
     _hideTimer?.cancel();
-    // Nothing is hidden while there is nothing behind it to look at.
-    if (_stage == _Stage.loading || _stage == _Stage.failed) return;
-    if (_stage == _Stage.playing && !(_controller?.value.isPlaying ?? false)) return;
+    // Nothing is hidden while there is nothing behind it to look at. The embedded
+    // fallback is the same case for a different reason: our bar is the only way
+    // back out of the provider's page, and its taps go to the page, not to us —
+    // so hiding it would strand the viewer.
+    if (_stage != _Stage.playing) return;
+    if (!(_controller?.value.isPlaying ?? false)) return;
 
     _hideTimer = Timer(_controlsTimeout, () {
       if (mounted) setState(() => _controlsVisible = false);
@@ -564,6 +567,19 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
           fit: StackFit.expand,
           children: [
             _buildStage(),
+            if (_stage == _Stage.playing && _controller != null)
+              ValueListenableBuilder<VideoPlayerValue>(
+                valueListenable: _controller!,
+                builder: (context, value, _) => value.isBuffering && !_controlsVisible
+                    ? const Center(
+                        child: SizedBox(
+                          width: 40,
+                          height: 40,
+                          child: CircularProgressIndicator(strokeWidth: 3),
+                        ),
+                      )
+                    : const SizedBox.shrink(),
+              ),
             PlayerGestureLayer(
               enabled: _stage != _Stage.embedded,
               locked: _locked,
