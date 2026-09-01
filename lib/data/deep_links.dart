@@ -45,7 +45,19 @@ class DeepLinks {
     return (type: type, id: id);
   }
 
-  /// The caption that travels with a shared poster.
-  static String shareText(MediaItem item) =>
-      '${item.title} on StreamSynx\n${forItem(item)}';
+  /// The message a shared link travels as.
+  ///
+  /// The URL is on its own line and last. Messaging apps unfurl the final link
+  /// in a message and only that one, so anything appended after it costs the
+  /// preview — which is the whole point of sharing a link rather than a picture.
+  static String shareText(MediaItem item) {
+    final year = item.year;
+    final name = year.isEmpty ? item.title : '${item.title} ($year)';
+    return '$name — watch it on StreamSynx\n${forItem(item)}';
+  }
+
+  /// The caption that travels alongside a story image, where the link is not
+  /// tappable and has to be readable instead.
+  static String posterText(MediaItem item) =>
+      '${item.title} on StreamSynx · ${forItem(item)}';
 }

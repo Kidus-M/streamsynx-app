@@ -10,22 +10,65 @@ import '../data/library_repo.dart';
 import '../data/models.dart';
 import '../theme/tokens.dart';
 import '../theme/app_theme.dart';
-import '../widgets/app_chrome.dart';
 import 'ad_block.dart';
+import 'player_controls.dart';
+import 'player_sheets.dart';
 import 'stream_source.dart';
 import 'stream_resolver.dart';
+
+/// How the player gets on screen.
+///
+/// Always the root navigator. The tabs each own a nested navigator, and pushing
+/// the player into one of those left the bottom bar sitting over the video and
+/// the source sheet trapped inside a five-eighths-height column — which is why
+/// the servers could not be reached. A player is a mode, not a page inside a tab.
+class PlayerRoute {
+  const PlayerRoute._();
+
+  static Future<void> open(
+    BuildContext context, {
+    required MediaItem item,
+    int season = 1,
+    int episode = 1,
+    int episodeCount = 0,
+    String? episodeName,
+    List<Episode> episodes = const [],
+  }) {
+    return Navigator.of(context, rootNavigator: true).push<void>(
+      PageRouteBuilder<void>(
+        opaque: true,
+        barrierColor: Colors.black,
+        transitionDuration: AppMotion.normal,
+        reverseTransitionDuration: AppMotion.fast,
+        pageBuilder: (_, __, ___) => PlayerScreen(
+          item: item,
+          season: season,
+          episode: episode,
+          episodeCount: episodeCount,
+          episodeName: episodeName,
+          episodes: episodes,
+        ),
+        transitionsBuilder: (_, animation, __, child) => FadeTransition(
+          opacity: CurvedAnimation(parent: animation, curve: AppMotion.curve),
+          child: child,
+        ),
+      ),
+    );
+  }
+}
 
 /// Playback.
 ///
 /// Everything that can play, plays natively: real transport controls, resume
 /// points, no third-party document on screen. An embedded provider gets there too,
 /// after [StreamResolver] has used its page off-screen to find the video
-/// underneath it.
+/// underneath it — and if the first provider will not give one up, the next is
+/// tried automatically rather than leaving the viewer on a spinner.
 ///
-/// Only when that resolution fails does the provider page itself get shown, with
-/// [AdBlock] filtering it. That path is a last resort by design — advertising on
-/// these hosts was the worst thing about the previous build, and the reliable way
-/// to beat it is to never render their page at all.
+/// Only when that fails for every candidate does the provider page itself get
+/// shown, with [AdBlock] filtering it. That path is a last resort by design —
+/// advertising on these hosts was the worst thing about the previous build, and
+/// the reliable way to beat it is to never render their page at all.
 class PlayerScreen extends StatefulWidget {
   const PlayerScreen({
     super.key,
@@ -34,6 +77,7 @@ class PlayerScreen extends StatefulWidget {
     this.episode = 1,
     this.episodeCount = 0,
     this.episodeName,
+    this.episodes = const [],
   });
 
   final MediaItem item;
@@ -41,36 +85,59 @@ class PlayerScreen extends StatefulWidget {
   final int episode;
   final int episodeCount;
   final String? episodeName;
+  final List<Episode> episodes;
 
   @override
   State<PlayerScreen> createState() => _PlayerScreenState();
 }
 
-class _PlayerScreenState extends State<PlayerScreen> {
+enum _Stage { loading, playing, embedded, failed }
+
+class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver {
+  /// Long enough to read the title, short enough to get out of the way.
   static const _controlsTimeout = Duration(seconds: 4);
   static const _skip = Duration(seconds: 10);
+
+  /// How many providers to try headlessly before showing one of them for real.
+  /// Four attempts at fifteen seconds is a minute of spinner; two is thirty
+  /// seconds and still covers the common case of one provider being down.
+  static const _autoAttempts = 2;
+  static const _resolveTimeout = Duration(seconds: 15);
 
   final LibraryRepo _library = LibraryRepo();
   final StreamResolver _resolver = StreamResolver();
 
   late List<StreamSource> _sources;
-  int _sourceIndex = 0;
   late int _episode;
+  late String? _episodeName;
+
+  int _sourceIndex = 0;
+  int _attempt = 0;
 
   VideoPlayerController? _controller;
-  String? _fallbackUrl;
-  String _fallbackHost = '';
+  String? _embedUrl;
+  String _embedHost = '';
+
+  _Stage _stage = _Stage.loading;
+  String _status = 'Getting things ready…';
+  String? _failure;
 
   bool _controlsVisible = true;
-  bool _buffering = true;
-  String? _status;
-  String _shield = 'Ad-free';
+  bool _locked = false;
+  bool _fillScreen = false;
+  double _speed = 1;
+  bool _boosting = false;
+
   Timer? _hideTimer;
+  bool _disposed = false;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+
     _episode = widget.episode;
+    _episodeName = widget.episodeName;
     _sources = StreamSource.forItem(widget.item);
 
     WakelockPlus.enable();
@@ -83,15 +150,22 @@ class _PlayerScreenState extends State<PlayerScreen> {
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
 
     unawaited(_library.recordWatch(widget.item));
-    _start(0);
+    unawaited(_startAuto());
   }
 
   @override
   void dispose() {
+    _disposed = true;
+    WidgetsBinding.instance.removeObserver(this);
     _hideTimer?.cancel();
-    unawaited(_saveProgress());
-    _controller?.removeListener(_onPlayerTick);
-    _controller?.dispose();
+
+    final controller = _controller;
+    _controller = null;
+    if (controller != null) {
+      unawaited(_persist(controller));
+      controller.removeListener(_onControllerChanged);
+      unawaited(controller.dispose());
+    }
     unawaited(_resolver.dispose());
 
     WakelockPlus.disable();
@@ -103,43 +177,74 @@ class _PlayerScreenState extends State<PlayerScreen> {
     super.dispose();
   }
 
-  // --- Source lifecycle ---------------------------------------------------------
-
-  Future<void> _start(int index) async {
-    if (index < 0 || index >= _sources.length) {
-      _setStatus('No more sources to try.');
-      return;
-    }
-
-    await _teardownEngines();
-    if (!mounted) return;
-
-    setState(() {
-      _sourceIndex = index;
-      _buffering = true;
-      _status = 'Finding a stream…';
-      _controlsVisible = true;
-    });
-
-    final source = _sources[index];
-    final url = source.urlFor(widget.item, season: widget.season, episode: _episode);
-
-    if (source.kind == SourceKind.direct) {
-      await _playNative(ResolvedStream(url: url));
-      return;
-    }
-
-    final resolved = await _resolver.resolve(url);
-    if (!mounted) return;
-
-    if (resolved != null) {
-      await _playNative(resolved);
-    } else {
-      _showFallback(url);
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // Leaving the app should not leave audio running, and should not lose the
+    // viewer's place if the process is reclaimed while backgrounded.
+    if (state == AppLifecycleState.paused || state == AppLifecycleState.inactive) {
+      final controller = _controller;
+      if (controller != null && controller.value.isPlaying) {
+        unawaited(controller.pause());
+        unawaited(_persist(controller));
+      }
     }
   }
 
-  Future<void> _playNative(ResolvedStream stream) async {
+  // --- Source lifecycle ---------------------------------------------------------
+
+  /// Tries providers in order until one hands over a real stream, then falls back
+  /// to showing the first provider's own player.
+  Future<void> _startAuto() async {
+    if (_sources.isEmpty) {
+      _fail('No provider carries this title yet.');
+      return;
+    }
+
+    final limit = _autoAttempts < _sources.length ? _autoAttempts : _sources.length;
+
+    for (var index = 0; index < limit; index++) {
+      if (_disposed) return;
+      _attempt = index + 1;
+
+      final played = await _tryNative(index, of: limit);
+      if (played || _disposed) return;
+    }
+
+    // Every headless attempt came back empty. Rather than dead-end the viewer,
+    // show the provider's own player with the ad filter in front of it.
+    if (!_disposed) _showEmbedded(0);
+  }
+
+  /// Resolves and plays [index]. Returns true when video is actually running.
+  Future<bool> _tryNative(int index, {int of = 1}) async {
+    await _teardownPlayback();
+    if (_disposed) return false;
+
+    final source = _sources[index];
+    _setStage(
+      _Stage.loading,
+      status: of > 1
+          ? 'Finding an ad-free stream · ${source.name} (${index + 1}/$of)'
+          : 'Finding an ad-free stream · ${source.name}',
+      sourceIndex: index,
+    );
+
+    final url = source.urlFor(widget.item, season: widget.season, episode: _episode);
+    if (url.isEmpty) return false;
+
+    ResolvedStream? stream;
+    if (source.kind == SourceKind.direct) {
+      stream = ResolvedStream(url: url);
+    } else {
+      stream = await _resolver.resolve(url, timeout: _resolveTimeout);
+    }
+    if (_disposed || stream == null) return false;
+
+    if (mounted) setState(() => _status = 'Starting playback…');
+    return _playNative(stream);
+  }
+
+  Future<bool> _playNative(ResolvedStream stream) async {
     final controller = VideoPlayerController.networkUrl(
       Uri.parse(stream.url),
       httpHeaders: stream.httpHeaders,
@@ -150,81 +255,123 @@ class _PlayerScreenState extends State<PlayerScreen> {
       await controller.initialize();
     } on Object {
       await controller.dispose();
-      if (!mounted) return;
-      setState(() {
-        _buffering = false;
-        _status = 'That source would not play. Try another from Sources.';
-      });
-      return;
+      return false;
     }
-    if (!mounted) {
+    if (_disposed || !mounted || !controller.value.isInitialized) {
       await controller.dispose();
-      return;
+      return false;
     }
 
     final resumeMs = await _library.progressFor(widget.item, widget.season, _episode);
-    if (resumeMs > 0) {
+    if (resumeMs > 0 && resumeMs < controller.value.duration.inMilliseconds - 5000) {
       await controller.seekTo(Duration(milliseconds: resumeMs));
     }
+    await controller.setPlaybackSpeed(_speed);
     await controller.play();
-    controller.addListener(_onPlayerTick);
+    controller.addListener(_onControllerChanged);
 
-    if (!mounted) {
+    if (_disposed || !mounted) {
       await controller.dispose();
-      return;
+      return false;
     }
+
     setState(() {
       _controller = controller;
-      _buffering = false;
-      _shield = 'Ad-free';
-      _status = resumeMs > 0 ? 'Resumed from ${_format(Duration(milliseconds: resumeMs))}' : null;
+      _stage = _Stage.playing;
+      _failure = null;
+      _status = resumeMs > 0
+          ? 'Resumed from ${formatDuration(Duration(milliseconds: resumeMs))}'
+          : '';
     });
     _scheduleHide();
-    if (_status != null) {
+
+    if (_status.isNotEmpty) {
       Timer(const Duration(seconds: 4), () {
-        if (mounted) setState(() => _status = null);
+        if (mounted) setState(() => _status = '');
       });
     }
+    return true;
   }
 
-  void _showFallback(String url) {
+  void _showEmbedded(int index) {
+    final source = _sources[index];
+    final url = source.urlFor(widget.item, season: widget.season, episode: _episode);
+    if (url.isEmpty) {
+      _fail('${source.name} has nothing for this title.');
+      return;
+    }
+
     setState(() {
-      _fallbackUrl = url;
-      _fallbackHost = Uri.tryParse(url)?.host ?? '';
-      _buffering = false;
-      _shield = 'Ads filtered';
-      _status = 'This source keeps its own player. Ads are filtered, but Sources may work better.';
+      _sourceIndex = index;
+      _embedUrl = url;
+      _embedHost = Uri.tryParse(url)?.host ?? '';
+      _stage = _Stage.embedded;
+      _failure = null;
+      _status = '';
+      _controlsVisible = true;
     });
+    _scheduleHide();
   }
 
-  Future<void> _teardownEngines() async {
+  void _fail(String message) {
+    if (!mounted) return;
+    setState(() {
+      _stage = _Stage.failed;
+      _failure = message;
+      _controlsVisible = true;
+    });
     _hideTimer?.cancel();
-    await _saveProgress();
+  }
+
+  void _setStage(_Stage stage, {String status = '', int? sourceIndex}) {
+    if (!mounted) return;
+    setState(() {
+      _stage = stage;
+      _status = status;
+      if (sourceIndex != null) _sourceIndex = sourceIndex;
+      _controlsVisible = true;
+    });
+    _hideTimer?.cancel();
+  }
+
+  Future<void> _teardownPlayback() async {
+    _hideTimer?.cancel();
 
     final controller = _controller;
-    _controller = null;
-    controller?.removeListener(_onPlayerTick);
-    await controller?.dispose();
+    if (controller != null) {
+      await _persist(controller);
+      controller.removeListener(_onControllerChanged);
+      _controller = null;
+      await controller.dispose();
+    }
+    if (mounted) setState(() => _embedUrl = null);
+  }
 
-    await _resolver.dispose();
-    if (mounted) setState(() => _fallbackUrl = null);
+  /// The one entry point for changing provider by hand.
+  Future<void> _switchTo(int index) async {
+    if (index < 0 || index >= _sources.length) return;
+
+    final played = await _tryNative(index);
+    if (played || _disposed) return;
+    // A provider the viewer explicitly chose is worth showing even when it will
+    // not give up its stream — it is still the thing they asked for.
+    if (mounted) _showEmbedded(index);
   }
 
   // --- Transport ----------------------------------------------------------------
 
-  void _onPlayerTick() {
+  void _onControllerChanged() {
     final controller = _controller;
     if (controller == null || !mounted) return;
 
     final value = controller.value;
-    if (value.isBuffering != _buffering) {
-      setState(() => _buffering = value.isBuffering);
-    } else {
-      // Repaints the scrubber without rebuilding the whole tree state.
-      setState(() {});
+    if (value.hasError && _stage == _Stage.playing) {
+      _fail('The stream stopped. Try another server.');
+      return;
     }
 
-    if (value.position >= value.duration && value.duration > Duration.zero) {
+    if (value.duration > Duration.zero &&
+        value.position >= value.duration - const Duration(milliseconds: 400)) {
       _onFinished();
     }
   }
@@ -235,37 +382,70 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
     if (controller.value.isPlaying) {
       await controller.pause();
+      _hideTimer?.cancel();
+      if (mounted) setState(() => _controlsVisible = true);
     } else {
       await controller.play();
+      _scheduleHide();
     }
-    _scheduleHide();
-    setState(() {});
+    if (mounted) setState(() {});
   }
 
   Future<void> _seekBy(Duration delta) async {
     final controller = _controller;
     if (controller == null) return;
+    await _seekTo(controller.value.position + delta);
+  }
 
-    final target = controller.value.position + delta;
+  Future<void> _seekTo(Duration target) async {
+    final controller = _controller;
+    if (controller == null) return;
+
+    final duration = controller.value.duration;
     final clamped = target < Duration.zero
         ? Duration.zero
-        : (target > controller.value.duration ? controller.value.duration : target);
+        : (target > duration ? duration : target);
     await controller.seekTo(clamped);
     _scheduleHide();
   }
 
+  /// Press and hold to run at double speed, the way every phone player now does.
+  Future<void> _setBoost(bool on) async {
+    final controller = _controller;
+    if (controller == null || !controller.value.isPlaying) return;
+    if (_boosting == on) return;
+
+    _boosting = on;
+    await controller.setPlaybackSpeed(on ? 2.0 : _speed);
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _setSpeed(double speed) async {
+    _speed = speed;
+    await _controller?.setPlaybackSpeed(speed);
+    if (mounted) setState(() {});
+  }
+
   void _onFinished() {
     if (widget.item.isTv && _episode < widget.episodeCount) {
-      setState(() => _episode += 1);
-      unawaited(_start(_sourceIndex));
+      _playEpisode(_episode + 1);
       return;
     }
     if (mounted) Navigator.of(context).maybePop();
   }
 
-  Future<void> _saveProgress() async {
-    final controller = _controller;
-    if (controller == null || !controller.value.isInitialized) return;
+  void _playEpisode(int number) {
+    final match = widget.episodes.where((e) => e.number == number);
+    setState(() {
+      _episode = number;
+      _episodeName = match.isEmpty ? null : match.first.name;
+    });
+    unawaited(_switchTo(_sourceIndex));
+  }
+
+  Future<void> _persist(VideoPlayerController controller) async {
+    if (!controller.value.isInitialized) return;
+    if (controller.value.duration <= Duration.zero) return;
 
     await _library.saveProgress(
       item: widget.item,
@@ -279,71 +459,93 @@ class _PlayerScreenState extends State<PlayerScreen> {
   // --- Chrome -------------------------------------------------------------------
 
   void _toggleControls() {
+    if (_locked) {
+      // Locked, a tap only offers the way out; it does not bring the whole
+      // overlay back over the picture.
+      setState(() => _controlsVisible = true);
+      _hideTimer?.cancel();
+      _hideTimer = Timer(_controlsTimeout, () {
+        if (mounted) setState(() => _controlsVisible = false);
+      });
+      return;
+    }
+
     setState(() => _controlsVisible = !_controlsVisible);
     if (_controlsVisible) _scheduleHide();
   }
 
   void _scheduleHide() {
     _hideTimer?.cancel();
-    if (_controller == null) return;
+    // Nothing is hidden while there is nothing behind it to look at.
+    if (_stage == _Stage.loading || _stage == _Stage.failed) return;
+    if (_stage == _Stage.playing && !(_controller?.value.isPlaying ?? false)) return;
+
     _hideTimer = Timer(_controlsTimeout, () {
       if (mounted) setState(() => _controlsVisible = false);
     });
   }
 
-  void _setStatus(String message) {
-    if (mounted) setState(() => _status = message);
-  }
-
   Future<void> _openSources() async {
     _hideTimer?.cancel();
 
-    final chosen = await showModalBottomSheet<int>(
-      context: context,
-      backgroundColor: AppColors.bgSoft,
-      builder: (sheetContext) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(
-                  AppSpace.gutter, AppSpace.sm, AppSpace.gutter, AppSpace.sm),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: const [
-                  Text('SOURCE', style: AppText.eyebrow),
-                  SizedBox(height: AppSpace.xs),
-                  Text('Play from', style: AppText.headingLg),
-                ],
-              ),
-            ),
-            for (var i = 0; i < _sources.length; i++)
-              ListTile(
-                onTap: () => Navigator.of(sheetContext).pop(i),
-                leading: Icon(
-                  i == _sourceIndex ? Icons.radio_button_checked : Icons.radio_button_off,
-                  color: i == _sourceIndex ? AppColors.accent : AppColors.textSecondary,
-                ),
-                title: Text(_sources[i].name, style: AppText.label),
-                subtitle: Text(
-                  _sources[i].kind == SourceKind.direct
-                      ? 'Native, ad-free'
-                      : 'Resolved off-screen',
-                  style: AppText.caption,
-                ),
-              ),
-            const SizedBox(height: AppSpace.sm),
-          ],
-        ),
-      ),
+    final chosen = await showSourceSheet(
+      context,
+      sources: _sources,
+      selected: _sourceIndex,
+      native: _stage == _Stage.playing,
     );
 
-    if (chosen != null && chosen != _sourceIndex) {
-      unawaited(_start(chosen));
-    } else {
+    if (chosen == null) {
       _scheduleHide();
+      return;
     }
+    unawaited(_switchTo(chosen));
+  }
+
+  Future<void> _openEpisodes() async {
+    _hideTimer?.cancel();
+
+    final chosen = await showEpisodeSheet(
+      context,
+      episodes: widget.episodes,
+      season: widget.season,
+      current: _episode,
+    );
+
+    if (chosen == null) {
+      _scheduleHide();
+      return;
+    }
+    _playEpisode(chosen);
+  }
+
+  Future<void> _openMore() async {
+    _hideTimer?.cancel();
+
+    final choice = await showPlaybackSheet(
+      context,
+      speed: _speed,
+      fill: _fillScreen,
+      native: _stage == _Stage.playing,
+    );
+
+    if (choice == null) {
+      _scheduleHide();
+      return;
+    }
+
+    switch (choice) {
+      case PlaybackFit():
+        setState(() => _fillScreen = !_fillScreen);
+      case PlaybackLock():
+        setState(() {
+          _locked = true;
+          _controlsVisible = false;
+        });
+      case PlaybackSpeed(:final value):
+        await _setSpeed(value);
+    }
+    _scheduleHide();
   }
 
   // --- Build --------------------------------------------------------------------
@@ -352,35 +554,27 @@ class _PlayerScreenState extends State<PlayerScreen> {
   Widget build(BuildContext context) {
     return PopScope(
       canPop: true,
-      onPopInvokedWithResult: (didPop, _) => unawaited(_saveProgress()),
+      onPopInvokedWithResult: (didPop, _) {
+        final controller = _controller;
+        if (controller != null) unawaited(_persist(controller));
+      },
       child: Scaffold(
         backgroundColor: Colors.black,
-        body: GestureDetector(
-          onTap: _toggleControls,
-          behavior: HitTestBehavior.opaque,
-          child: Stack(
-            fit: StackFit.expand,
-            children: [
-              _buildStage(),
-              if (_buffering)
-                const Center(
-                  child: SizedBox(
-                    width: 44,
-                    height: 44,
-                    child: CircularProgressIndicator(strokeWidth: 3),
-                  ),
-                ),
-              AnimatedOpacity(
-                opacity: _controlsVisible ? 1 : 0,
-                duration: AppMotion.normal,
-                curve: AppMotion.curve,
-                child: IgnorePointer(
-                  ignoring: !_controlsVisible,
-                  child: _buildControls(),
-                ),
-              ),
-            ],
-          ),
+        body: Stack(
+          fit: StackFit.expand,
+          children: [
+            _buildStage(),
+            PlayerGestureLayer(
+              enabled: _stage != _Stage.embedded,
+              locked: _locked,
+              onTap: _toggleControls,
+              onSeekBy: _stage == _Stage.playing ? _seekBy : null,
+              onBoost: _stage == _Stage.playing ? _setBoost : null,
+              skip: _skip,
+            ),
+            if (_boosting) const _BoostBadge(),
+            _buildOverlay(),
+          ],
         ),
       ),
     );
@@ -388,19 +582,15 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
   Widget _buildStage() {
     final controller = _controller;
-    if (controller != null && controller.value.isInitialized) {
-      return Center(
-        child: AspectRatio(
-          aspectRatio: controller.value.aspectRatio,
-          child: VideoPlayer(controller),
-        ),
-      );
+    if (_stage == _Stage.playing && controller != null) {
+      return VideoStage(controller: controller, fill: _fillScreen);
     }
 
-    final fallbackUrl = _fallbackUrl;
-    if (fallbackUrl != null) {
+    final embedUrl = _embedUrl;
+    if (_stage == _Stage.embedded && embedUrl != null) {
       return InAppWebView(
-        initialUrlRequest: URLRequest(url: WebUri(fallbackUrl)),
+        key: ValueKey(embedUrl),
+        initialUrlRequest: URLRequest(url: WebUri(embedUrl)),
         initialSettings: AdBlock.webViewSettings,
         shouldInterceptRequest: (controller, request) async =>
             AdBlock.shouldBlock(request.url.uriValue)
@@ -417,7 +607,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
           // redirect the viewer never asked for. Subframes stay allowed —
           // the provider's player lives in one.
           if (action.isForMainFrame &&
-              !AdBlock.isSameProvider(_fallbackHost, target)) {
+              !AdBlock.isSameProvider(_embedHost, target)) {
             return NavigationActionPolicy.CANCEL;
           }
           return NavigationActionPolicy.ALLOW;
@@ -432,216 +622,85 @@ class _PlayerScreenState extends State<PlayerScreen> {
     return const ColoredBox(color: Colors.black);
   }
 
-  Widget _buildControls() {
-    return DecoratedBox(
-      decoration: BoxDecoration(
-        gradient: LinearGradient(
-          begin: Alignment.topCenter,
-          end: Alignment.bottomCenter,
-          colors: [
-            AppColors.black(0.75),
-            AppColors.black(0.1),
-            AppColors.black(0.85),
-          ],
-          stops: const [0, 0.45, 1],
-        ),
-      ),
-      child: SafeArea(
-        child: Column(
-          children: [
-            _buildTopBar(),
-            const Spacer(),
-            if (_controller != null) _buildCentreTransport(),
-            const Spacer(),
-            _buildBottomBar(),
-          ],
-        ),
-      ),
+  Widget _buildOverlay() {
+    if (_locked) {
+      return LockedOverlay(
+        visible: _controlsVisible,
+        onUnlock: () {
+          setState(() {
+            _locked = false;
+            _controlsVisible = true;
+          });
+          _scheduleHide();
+        },
+      );
+    }
+
+    return PlayerControls(
+      visible: _controlsVisible,
+      stage: switch (_stage) {
+        _Stage.loading => ControlsStage.loading,
+        _Stage.playing => ControlsStage.playing,
+        _Stage.embedded => ControlsStage.embedded,
+        _Stage.failed => ControlsStage.failed,
+      },
+      title: widget.item.title,
+      subtitle: _subtitle,
+      status: _status,
+      failure: _failure,
+      shield: _stage == _Stage.embedded ? 'Ads filtered' : 'Ad-free',
+      sourceName: _sources.isEmpty ? '' : _sources[_sourceIndex].name,
+      attempt: _attempt,
+      controller: _controller,
+      hasEpisodes: widget.item.isTv && widget.episodes.isNotEmpty,
+      hasNextEpisode: widget.item.isTv && _episode < widget.episodeCount,
+      skip: _skip,
+      onBack: () => Navigator.of(context).maybePop(),
+      onTogglePlay: _togglePlay,
+      onSeekBy: _seekBy,
+      onSeekTo: _seekTo,
+      onScrubbing: (active) => active ? _hideTimer?.cancel() : _scheduleHide(),
+      onSources: _openSources,
+      onEpisodes: _openEpisodes,
+      onMore: _openMore,
+      onNextEpisode: () => _playEpisode(_episode + 1),
+      onRetry: () => unawaited(_switchTo(_sourceIndex)),
     );
-  }
-
-  Widget _buildTopBar() {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(AppSpace.sm, AppSpace.sm, AppSpace.lg, 0),
-      child: Row(
-        children: [
-          IconButton(
-            onPressed: () => Navigator.of(context).maybePop(),
-            icon: const Icon(Icons.arrow_back_rounded),
-            color: AppColors.textPrimary,
-          ),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  widget.item.title,
-                  style: AppText.headingSm,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
-                Text(
-                  _subtitle,
-                  style: AppText.caption,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(width: AppSpace.sm),
-          ShieldChip(label: _shield),
-          IconButton(
-            onPressed: _openSources,
-            icon: const Icon(Icons.layers_rounded),
-            color: AppColors.textPrimary,
-            tooltip: 'Sources',
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildCentreTransport() {
-    final playing = _controller?.value.isPlaying ?? false;
-
-    return Row(
-      mainAxisAlignment: MainAxisAlignment.center,
-      children: [
-        _RoundControl(
-          icon: Icons.replay_10_rounded,
-          onTap: () => _seekBy(-_skip),
-        ),
-        const SizedBox(width: AppSpace.xxl),
-        _RoundControl(
-          icon: playing ? Icons.pause_rounded : Icons.play_arrow_rounded,
-          primary: true,
-          onTap: _togglePlay,
-        ),
-        const SizedBox(width: AppSpace.xxl),
-        _RoundControl(
-          icon: Icons.forward_10_rounded,
-          onTap: () => _seekBy(_skip),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildBottomBar() {
-    final controller = _controller;
-    final status = _status;
-
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(
-          AppSpace.gutter, 0, AppSpace.gutter, AppSpace.lg),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          if (status != null)
-            Padding(
-              padding: const EdgeInsets.only(bottom: AppSpace.md),
-              child: Text(status, style: AppText.caption.copyWith(color: AppColors.accentSoft)),
-            ),
-          if (controller != null && controller.value.isInitialized) ...[
-            SliderTheme(
-              data: SliderThemeData(
-                trackHeight: 3,
-                activeTrackColor: AppColors.accent,
-                inactiveTrackColor: AppColors.white(0.2),
-                thumbColor: AppColors.accent,
-                thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 7),
-                overlayShape: const RoundSliderOverlayShape(overlayRadius: 16),
-                overlayColor: AppColors.accentAt(0.2),
-              ),
-              child: Slider(
-                value: _sliderValue(controller),
-                onChanged: (value) {
-                  final target = controller.value.duration * value;
-                  controller.seekTo(target);
-                  _scheduleHide();
-                },
-              ),
-            ),
-            Row(
-              children: [
-                Text(_format(controller.value.position), style: AppText.caption),
-                const Spacer(),
-                Text(
-                  _sources.isEmpty ? '' : _sources[_sourceIndex].name,
-                  style: AppText.caption,
-                ),
-                const Spacer(),
-                Text(_format(controller.value.duration), style: AppText.caption),
-              ],
-            ),
-          ],
-          if (widget.item.isTv && _episode < widget.episodeCount)
-            Align(
-              alignment: Alignment.centerRight,
-              child: TextButton.icon(
-                onPressed: _onFinished,
-                icon: const Icon(Icons.skip_next_rounded, size: 18),
-                label: const Text('Next episode'),
-              ),
-            ),
-        ],
-      ),
-    );
-  }
-
-  double _sliderValue(VideoPlayerController controller) {
-    final duration = controller.value.duration.inMilliseconds;
-    if (duration <= 0) return 0;
-    final position = controller.value.position.inMilliseconds;
-    return (position / duration).clamp(0.0, 1.0);
   }
 
   String get _subtitle {
     if (!widget.item.isTv) return widget.item.metaLine();
-    final label = 'Season ${widget.season} · Episode $_episode';
-    final name = widget.episodeName;
+    final label = 'S${widget.season} · E$_episode';
+    final name = _episodeName;
     return (name == null || name.isEmpty) ? label : '$label · $name';
-  }
-
-  static String _format(Duration duration) {
-    final hours = duration.inHours;
-    final minutes = duration.inMinutes.remainder(60);
-    final seconds = duration.inSeconds.remainder(60);
-    final mm = minutes.toString().padLeft(hours > 0 ? 2 : 1, '0');
-    final ss = seconds.toString().padLeft(2, '0');
-    return hours > 0 ? '$hours:$mm:$ss' : '$mm:$ss';
   }
 }
 
-class _RoundControl extends StatelessWidget {
-  const _RoundControl({
-    required this.icon,
-    required this.onTap,
-    this.primary = false,
-  });
-
-  final IconData icon;
-  final VoidCallback onTap;
-  final bool primary;
+/// The badge that confirms a press-and-hold is doing something.
+class _BoostBadge extends StatelessWidget {
+  const _BoostBadge();
 
   @override
   Widget build(BuildContext context) {
-    final size = primary ? 68.0 : 52.0;
-
-    return Material(
-      color: primary ? AppColors.accent : AppColors.black(0.45),
-      shape: const CircleBorder(),
-      child: InkWell(
-        onTap: onTap,
-        customBorder: const CircleBorder(),
-        child: SizedBox(
-          width: size,
-          height: size,
-          child: Icon(
-            icon,
-            size: primary ? 38 : 26,
-            color: primary ? AppColors.bg : AppColors.textPrimary,
-          ),
+    return Align(
+      alignment: const Alignment(0, -0.72),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
+        decoration: BoxDecoration(
+          color: AppColors.black(0.7),
+          borderRadius: AppRadius.all(AppRadius.pill),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.fast_forward_rounded,
+                size: 16, color: AppColors.textPrimary),
+            const SizedBox(width: 6),
+            Text('2x speed', style: AppText.caption.copyWith(
+              color: AppColors.textPrimary,
+              fontWeight: FontWeight.w600,
+            )),
+          ],
         ),
       ),
     );
