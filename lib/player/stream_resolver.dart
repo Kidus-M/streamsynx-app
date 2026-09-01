@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:collection';
 import 'dart:typed_data';
 import 'dart:ui' show Size;
 
@@ -18,54 +19,89 @@ class ResolvedStream {
   final Map<String, String> headers;
   final String? userAgent;
 
+  bool get isManifest {
+    final lower = url.toLowerCase();
+    return lower.contains('.m3u8') ||
+        lower.contains('.mpd') ||
+        lower.contains('/manifest');
+  }
+
   /// `video_player` takes headers as a plain map; the Referer is usually what
   /// decides whether a CDN serves the segment or returns 403.
   Map<String, String> get httpHeaders => {
         ...headers,
         if (userAgent != null) 'User-Agent': userAgent!,
       };
+
+  ResolvedStream withDefaults({required String referer, required String origin}) {
+    return ResolvedStream(
+      url: url,
+      headers: {
+        'Referer': referer,
+        'Origin': origin,
+        ...headers,
+      },
+      userAgent: userAgent ?? _desktopUserAgent,
+    );
+  }
 }
+
+/// Chrome on Android. Several providers gate the manifest on a browser-looking
+/// agent, and `video_player` otherwise sends ExoPlayer's own.
+const _desktopUserAgent =
+    'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) '
+    'Chrome/124.0.0.0 Mobile Safari/537.36';
 
 /// Resolves a provider page down to the video URL underneath it, without ever
 /// showing the page.
 ///
 /// This is the answer to the advertising. Filtering a hostile page while it is on
 /// screen is a losing game — one interstitial that gets through owns the whole
-/// app. So the page is loaded headlessly, purely as a resolver: every request it
-/// makes is inspected, the media manifest is picked out, and the page is thrown
-/// away. Playback then happens in the native player against that URL, where there
-/// is no document for an advert to live in.
+/// app. So the page is loaded headlessly, purely as a resolver: it is watched
+/// from four angles at once — intercepted requests, loaded resources, and the
+/// `fetch`/`XHR`/`<video>.src` hooks injected by [AdBlock.mediaSniffScript] — and
+/// the first thing that looks like a real manifest wins. Playback then happens in
+/// the native player against that URL, where there is no document for an advert
+/// to live in.
 class StreamResolver {
   StreamResolver();
-
-  /// Long enough for a slow provider to hand over a manifest, short enough not to
-  /// strand the viewer on a spinner.
-  static const _timeout = Duration(seconds: 22);
 
   /// A manifest is the prize, but plenty of providers serve progressive MP4. MP4
   /// is only accepted after this grace period, because pre-roll advert creatives
   /// are almost always MP4 and almost always arrive first.
-  static const _mp4Grace = Duration(seconds: 6);
+  static const _mp4Grace = Duration(seconds: 5);
 
   HeadlessInAppWebView? _webView;
   Completer<ResolvedStream?>? _completer;
   Timer? _timer;
   DateTime _startedAt = DateTime.now();
   String _host = '';
+  String _origin = '';
+  String _pageUrl = '';
   bool _settled = false;
 
   /// Loads [pageUrl] off-screen and returns the stream it plays, or null if
-  /// nothing recognisable turned up before the timeout.
-  Future<ResolvedStream?> resolve(String pageUrl) async {
+  /// nothing recognisable turned up before [timeout].
+  ///
+  /// The view is always torn down before this future completes, so a caller can
+  /// simply await it in a loop across sources without leaking a page that is
+  /// still making requests.
+  Future<ResolvedStream?> resolve(
+    String pageUrl, {
+    Duration timeout = const Duration(seconds: 15),
+  }) async {
     await dispose();
 
     _settled = false;
     _startedAt = DateTime.now();
-    _host = Uri.tryParse(pageUrl)?.host ?? '';
+    _pageUrl = pageUrl;
+    final parsed = Uri.tryParse(pageUrl);
+    _host = parsed?.host ?? '';
+    _origin = parsed == null ? '' : '${parsed.scheme}://${parsed.host}';
+
     final completer = Completer<ResolvedStream?>();
     _completer = completer;
-
-    _timer = Timer(_timeout, () => _settle(null));
+    _timer = Timer(timeout, () => _settle(null));
 
     _webView = HeadlessInAppWebView(
       // A real viewport matters even off-screen: these players check their own
@@ -74,24 +110,33 @@ class StreamResolver {
       initialSize: const Size(1280, 720),
       initialUrlRequest: URLRequest(url: WebUri(pageUrl)),
       initialSettings: AdBlock.resolverSettings,
+      initialUserScripts: UnmodifiableListView(AdBlock.resolverScripts),
+      onWebViewCreated: (controller) {
+        controller.addJavaScriptHandler(
+          handlerName: 'synxMedia',
+          callback: (args) {
+            if (args.isEmpty) return null;
+            final url = args.first?.toString();
+            final referer = args.length > 1 ? args[1]?.toString() : null;
+            _consider(url, referer: referer);
+            return null;
+          },
+        );
+      },
       shouldInterceptRequest: (controller, request) async {
         final uri = request.url.uriValue;
         if (AdBlock.shouldBlock(uri)) return _blocked;
 
-        final candidate = _mediaUrl(uri);
-        if (candidate != null) {
-          // Everything needed comes off the request itself. Calling back into the
-          // controller here would mean awaiting the WebView's own thread from
-          // inside a callback that is blocking it.
-          final headers = _carryHeaders(request.headers);
-          final userAgent = headers.remove('User-Agent');
-          _settle(ResolvedStream(
-            url: candidate,
-            headers: headers,
-            userAgent: userAgent,
-          ));
-        }
+        // Everything needed comes off the request itself. Calling back into the
+        // controller here would mean awaiting the WebView's own thread from
+        // inside a callback that is blocking it.
+        _consider(uri.toString(), requestHeaders: request.headers);
         return null;
+      },
+      onLoadResource: (controller, resource) async {
+        // The only media signal iOS gives, and a useful second opinion on
+        // Android for requests that never reach the interceptor.
+        _consider(resource.url?.toString());
       },
       shouldOverrideUrlLoading: (controller, action) async {
         final target = action.request.url?.uriValue;
@@ -100,8 +145,7 @@ class StreamResolver {
         // Subframes have to be allowed. These providers load their actual
         // player into an iframe, so cancelling non-main-frame navigation
         // cancels the one thing the resolver is here to find.
-        final isMainFrame = action.isForMainFrame;
-        if (!isMainFrame) return NavigationActionPolicy.ALLOW;
+        if (!action.isForMainFrame) return NavigationActionPolicy.ALLOW;
 
         return AdBlock.isSameProvider(_host, target)
             ? NavigationActionPolicy.ALLOW
@@ -112,13 +156,24 @@ class StreamResolver {
         return false;
       },
       onLoadStop: (controller, url) async {
-        await controller.evaluateJavascript(source: AdBlock.hardeningScript);
+        // The user scripts already ran at document start; this re-runs the
+        // autoplay nudge for pages that only build their player after load.
         await controller.evaluateJavascript(source: AdBlock.autoplayScript);
       },
     );
 
-    await _webView!.run();
-    return completer.future;
+    try {
+      await _webView!.run();
+    } on Object {
+      _settle(null);
+    }
+
+    final result = await completer.future;
+    // Tearing down here rather than inside the callback that produced the hit:
+    // disposing a WebView from within one of its own synchronous callbacks is
+    // how the resolver used to wedge.
+    await dispose();
+    return result;
   }
 
   Future<void> dispose() async {
@@ -135,10 +190,38 @@ class StreamResolver {
       }
     }
 
-    if (_completer != null && !_completer!.isCompleted) {
-      _completer!.complete(null);
-    }
+    final completer = _completer;
     _completer = null;
+    if (completer != null && !completer.isCompleted) completer.complete(null);
+  }
+
+  /// Weighs one candidate URL and settles the resolve if it is good enough.
+  void _consider(
+    String? url, {
+    Map<String, String>? requestHeaders,
+    String? referer,
+  }) {
+    if (_settled || url == null || url.isEmpty) return;
+
+    final uri = Uri.tryParse(url);
+    if (uri == null || !uri.hasScheme) return;
+    if (AdBlock.shouldBlock(uri)) return;
+    if (!_isMedia(url)) return;
+
+    final headers = _carryHeaders(requestHeaders);
+    final userAgent = headers.remove('User-Agent');
+    if (referer != null && referer.isNotEmpty) {
+      headers.putIfAbsent('Referer', () => referer);
+    }
+
+    _settle(ResolvedStream(
+      url: url,
+      headers: headers,
+      userAgent: userAgent,
+    ).withDefaults(
+      referer: headers['Referer'] ?? _pageUrl,
+      origin: _origin,
+    ));
   }
 
   void _settle(ResolvedStream? stream) {
@@ -148,34 +231,30 @@ class StreamResolver {
 
     final completer = _completer;
     if (completer != null && !completer.isCompleted) completer.complete(stream);
-
-    // The page has served its purpose; tear it down so it stops making requests.
-    unawaited(dispose());
   }
 
-  /// @return the URL if it looks like the actual video, otherwise null.
-  String? _mediaUrl(Uri? uri) {
-    if (uri == null) return null;
-    final url = uri.toString();
+  /// True when the URL looks like the actual video rather than a fragment of it.
+  bool _isMedia(String url) {
     final lower = url.toLowerCase();
 
     // Segments are not worth catching: the manifest that lists them is.
-    if (lower.endsWith('.ts') || lower.contains('.ts?')) return null;
+    if (lower.endsWith('.ts') || lower.contains('.ts?')) return false;
+    if (lower.endsWith('.vtt') || lower.endsWith('.srt')) return false;
+    if (lower.endsWith('.jpg') || lower.endsWith('.png')) return false;
 
     final isManifest = lower.contains('.m3u8') ||
         lower.contains('.mpd') ||
-        lower.contains('/manifest');
-    if (isManifest) return url;
+        lower.contains('/manifest') ||
+        lower.contains('master.txt');
+    if (isManifest) return true;
 
     final isProgressive = lower.contains('.mp4') || lower.contains('.mkv');
-    if (isProgressive && DateTime.now().difference(_startedAt) > _mp4Grace) {
-      return url;
-    }
-    return null;
+    return isProgressive &&
+        DateTime.now().difference(_startedAt) > _mp4Grace;
   }
 
   static Map<String, String> _carryHeaders(Map<String, String>? headers) {
-    if (headers == null) return const {};
+    if (headers == null) return <String, String>{};
     const wanted = ['Referer', 'Origin', 'Cookie', 'User-Agent'];
 
     final carried = <String, String>{};
