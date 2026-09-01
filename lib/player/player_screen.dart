@@ -132,6 +132,11 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
   Timer? _hideTimer;
   bool _disposed = false;
 
+  /// Guards the episode change. The controller ticks several times a second, and
+  /// the end-of-stream check would otherwise fire the advance on every one of
+  /// them until teardown finally detaches the listener.
+  bool _advancing = false;
+
   @override
   void initState() {
     super.initState();
@@ -414,7 +419,10 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
   /// Press and hold to run at double speed, the way every phone player now does.
   Future<void> _setBoost(bool on) async {
     final controller = _controller;
-    if (controller == null || !controller.value.isPlaying) return;
+    if (controller == null) return;
+    // Only starting a boost needs playback to be running. Ending one always has
+    // to go through, or a stream that paused mid-hold stays stuck at 2x.
+    if (on && !controller.value.isPlaying) return;
     if (_boosting == on) return;
 
     _boosting = on;
@@ -429,20 +437,36 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
   }
 
   void _onFinished() {
+    if (_advancing) return;
+
     if (widget.item.isTv && _episode < widget.episodeCount) {
-      _playEpisode(_episode + 1);
+      unawaited(_playEpisode(_episode + 1));
       return;
     }
     if (mounted) Navigator.of(context).maybePop();
   }
 
-  void _playEpisode(int number) {
-    final match = widget.episodes.where((e) => e.number == number);
-    setState(() {
-      _episode = number;
-      _episodeName = match.isEmpty ? null : match.first.name;
-    });
-    unawaited(_switchTo(_sourceIndex));
+  Future<void> _playEpisode(int number) async {
+    if (_advancing) return;
+    _advancing = true;
+
+    try {
+      // Playback is torn down first, on purpose. Tearing down writes the resume
+      // point, and it has to be written against the episode that was playing —
+      // changing the number first files the old position under the new episode.
+      await _teardownPlayback();
+      if (_disposed || !mounted) return;
+
+      final match = widget.episodes.where((e) => e.number == number);
+      setState(() {
+        _episode = number;
+        _episodeName = match.isEmpty ? null : match.first.name;
+      });
+
+      await _switchTo(_sourceIndex);
+    } finally {
+      _advancing = false;
+    }
   }
 
   Future<void> _persist(VideoPlayerController controller) async {
@@ -521,7 +545,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
       _scheduleHide();
       return;
     }
-    _playEpisode(chosen);
+    unawaited(_playEpisode(chosen));
   }
 
   Future<void> _openMore() async {
@@ -690,7 +714,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
       onSources: _openSources,
       onEpisodes: _openEpisodes,
       onMore: _openMore,
-      onNextEpisode: () => _playEpisode(_episode + 1),
+      onNextEpisode: () => unawaited(_playEpisode(_episode + 1)),
       onRetry: () => unawaited(_switchTo(_sourceIndex)),
     );
   }
