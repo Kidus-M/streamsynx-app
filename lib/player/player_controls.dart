@@ -135,9 +135,14 @@ class _PlayerGestureLayerState extends State<PlayerGestureLayer> {
           onTap: widget.onTap,
           onDoubleTapDown: (details) => _handleDoubleTap(details.localPosition, size),
           onDoubleTap: () {},
-          onLongPressStart: (_) => widget.onBoost?.call(true),
-          onLongPressEnd: (_) => widget.onBoost?.call(false),
-          onLongPressCancel: () => widget.onBoost?.call(false),
+          // Locked means locked: a tap still has to reach the unlock button, but
+          // a stray press against a pocket must not change the speed.
+          onLongPressStart:
+              widget.locked ? null : (_) => widget.onBoost?.call(true),
+          onLongPressEnd:
+              widget.locked ? null : (_) => widget.onBoost?.call(false),
+          onLongPressCancel:
+              widget.locked ? null : () => widget.onBoost?.call(false),
           child: Stack(
             fit: StackFit.expand,
             children: [
